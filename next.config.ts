@@ -18,7 +18,7 @@ const nextConfig: NextConfig = {
         }
       : undefined,
   typedRoutes: true,
-  output: "standalone",
+  // output: "standalone",
   env: {
     BUILD_TIMESTAMP: new Date().toISOString(),
   },
