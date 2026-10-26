@@ -11,18 +11,16 @@ export async function PostHeader({ post }: Props) {
   return (
     <header>
       {metadata.category && (
-        <div className="mb-4 text-sm font-medium">{metadata.category}</div>
+        <div className="mb-4 font-medium text-sm">{metadata.category}</div>
       )}
 
-      <h1 className="text-4xl font-bold tracking-tight md:text-5xl">
+      <h1 className="font-bold text-4xl tracking-tight md:text-5xl">
         {metadata.title}
       </h1>
 
-      <p className="mt-2 text-lg text-zinc-600 dark:text-zinc-400">
-        {metadata.description}
-      </p>
+      <p className="mt-2 text-lg">{metadata.description}</p>
 
-      <div className="mt-2 flex flex-wrap gap-4 text-sm text-zinc-500">
+      <div className="mt-2 flex flex-wrap gap-4 text-sm">
         <time dateTime={metadata.date.toISOString()}>
           {formatDate(metadata.date)}
         </time>
