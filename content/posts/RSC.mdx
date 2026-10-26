@@ -1,0 +1,734 @@
+---
+title: "RSC"
+description: "React Server Components (RSC) in Next.js are components that render exclusively on the server, making them the default component type in the App Router."
+date: "2026-10-12"
+author: "Lios09"
+tags:
+  - SSR
+  - RSC
+  - CSR
+  - React
+  - Next.js
+category: "Development"
+published: true
+featured: true
+cover: "/images/posts/nextjs-mdx/cover.jpg"
+---
+
+---
+
+**RSC ≠ “浏览器请求 RSC → 得到 RSC 数据 → 再整体 hydration → 页面出现”。**
+
+Next.js 现在实际上把 **HTML 首屏、RSC Payload、Hydration** 这几个东西组合起来使用。
+
+你问的核心其实是：
+
+**既然传统 SSR 已经可以“服务端生成 HTML → 浏览器直接显示 → 再 hydration”，那 RSC 到底比传统 SSR 好在哪里？**
+
+这个问题非常关键。
+
+---
+
+# **先把传统 SSR 和 RSC 摆在一起**
+
+假设：
+
+```tsx
+export default async function Page() {
+  const products = await db.products.findMany()
+
+  return <ProductList products={products} />
+}
+```
+
+## **传统 SSR**
+
+典型流程：
+
+```
+Browser
+   │
+   │ GET /products
+   ▼
+Server
+   │
+   ├── 执行 React
+   ├── 查 DB
+   ├── 生成 HTML
+   │
+   ▼
+HTML
+   │
+   ▼
+Browser
+   │
+   ├── 显示 HTML
+   │
+   └── 下载 JS
+          ↓
+       hydration
+```
+
+最后浏览器里：
+
+```
+HTML
+ +
+JS
+ ↓
+React App
+```
+
+**整个 React 组件树最终都需要在客户端有对应的 JS。**
+
+---
+
+# **RSC 最大的变化**
+
+RSC 的核心不是：
+
+“SSR 速度更快。”
+
+而是：
+
+**Server Component 根本不需要发送到浏览器执行。**
+
+这是理解 RSC 最重要的一句话。
+
+比如：
+
+```tsx
+export default async function ProductPage() {
+  const products = await db.products.findMany()
+
+  return (
+    <div>
+      <h1>Products</h1>
+      <ProductList products={products} />
+    </div>
+  )
+}
+```
+
+如果这些都是 Server Components：
+
+```
+ProductPage
+   │
+   ├── db.products
+   │
+   ├── ProductList
+   │
+   └── ...
+```
+
+这些组件的代码：
+
+```
+不会
+↓
+发送到浏览器
+```
+
+而是在服务器执行完。
+
+---
+
+# **这就是 RSC 和传统 SSR 最大的区别**
+
+传统 SSR：
+
+```
+Server
+  ↓
+生成 HTML
+  ↓
+Browser
+  ↓
+还需要 React JS
+  ↓
+hydration
+```
+
+RSC：
+
+```
+Server Component
+       ↓
+只在 Server 执行
+       ↓
+生成 HTML + RSC Payload
+       ↓
+Browser
+       ↓
+只有 Client Component 需要 JS
+```
+
+所以真正的革命其实是：
+
+**把 React Component Tree 拆成 Server Component 和 Client Component。**
+
+---
+
+# **举个非常实际的例子**
+
+假设你的页面：
+
+```tsx
+export default async function Page() {
+  const products = await db.products.findMany()
+
+  return (
+    <main>
+      <Header />
+      <ProductList products={products} />
+      <Footer />
+    </main>
+  )
+}
+```
+
+其中：
+
+```
+Header       Server Component
+ProductList  Server Component
+Footer       Server Component
+```
+
+那么浏览器不需要下载：
+
+```
+Header.js
+ProductList.js
+Footer.js
+```
+
+因为它们根本不在客户端运行。
+
+---
+
+# **只有 Client Component 才需要 JS**
+
+比如：
+
+```tsx
+'use client'
+
+export function AddToCartButton() {
+  const [loading, setLoading] = useState(false)
+
+  return <button>加入购物车</button>
+}
+```
+
+这个组件需要：
+
+```
+JS
+↓
+Browser
+↓
+Hydration
+↓
+可以交互
+```
+
+于是最终你的页面可能变成：
+
+```
+                    Server
+                      │
+          ┌───────────┴───────────┐
+          │                       │
+     Server Components       Client Components
+          │                       │
+       不发 JS                  发 JS
+          │                       │
+          ▼                       ▼
+        HTML                 Hydration
+          │                       │
+          └───────────┬───────────┘
+                      ▼
+                   Browser
+```
+
+---
+
+# **那 RSC Payload 到底是什么？**
+
+这个地方非常容易误解。
+
+RSC Payload 不是：
+
+“把整个网页序列化成 JSON，然后浏览器再把 JSON 变成 HTML。”
+
+不是这么简单。
+
+它是一种 **React Server Components 专用的数据格式**，描述 Server Component 渲染出来的 React 树，以及 Server/Client Component 之间的边界、Props、引用等。
+
+例如概念上可以理解成：
+
+```
+Server
+   │
+   ├── Server Component
+   │       ↓
+   │   React Tree
+   │
+   ├── Client Component
+   │       ↓
+   │   module reference
+   │
+   └── props
+           ↓
+       RSC Payload
+```
+
+浏览器拿到之后，React 可以据此构造客户端需要的 React Tree。
+
+---
+
+# **那首屏是不是请求 RSC？**
+
+这里要特别纠正你前面那句话。
+
+**首屏导航不应该简单理解成：**
+
+```
+Browser
+ ↓
+请求 RSC
+ ↓
+收到 RSC
+ ↓
+hydration
+ ↓
+页面显示
+```
+
+对于 Next.js 的初始加载，通常会同时涉及：
+
+```
+HTML
++
+RSC Payload
++
+Client JS
+```
+
+HTML 可以让浏览器**尽早看到页面内容**。
+
+而 RSC Payload 则帮助 React 理解 Server Component Tree。
+
+Client JS 则负责 Client Components 的 hydration。
+
+所以更接近：
+
+```
+                    Server
+                      │
+             React Server Render
+                      │
+              ┌───────┴────────┐
+              │                │
+             HTML         RSC Payload
+              │                │
+              ▼                ▼
+          Browser         React Runtime
+              │                │
+              └───────┬────────┘
+                      │
+                Client Components
+                      │
+                  Hydration
+```
+
+---
+
+# **那么问题来了**
+
+你真正的问题：
+
+**“那传统 SSR 也可以 HTML + hydration，RSC 到底优势在哪？”**
+
+答案是：
+
+## **JS 体积和客户端执行量。**
+
+这才是 RSC 最核心的优势之一。
+
+---
+
+# **看一个极端例子**
+
+假设一个页面有：
+
+```
+100 个组件
+```
+
+其中：
+
+```
+95 个只是展示
+5 个需要交互
+```
+
+传统 SSR：
+
+```
+Server
+ ↓
+HTML
+
+Browser
+ ↓
+下载整个 React 页面相关 JS
+ ↓
+hydration
+ ↓
+100 个组件参与客户端 React
+```
+
+而 RSC：
+
+```
+Server Components
+95 个
+ ↓
+服务器执行
+ ↓
+不发送组件 JS
+
+Client Components
+5 个
+ ↓
+发送 JS
+ ↓
+hydration
+```
+
+于是：
+
+```
+传统 SSR
+
+HTML
++
+100 个组件的客户端 JS
++
+hydration
+```
+
+变成：
+
+```
+RSC
+
+HTML
++
+RSC Payload
++
+5 个 Client Components 的 JS
+```
+
+这就是非常大的区别。
+
+---
+
+# **而且 RSC 还能直接访问服务器资源**
+
+例如：
+
+```tsx
+async function ProductList() {
+  const products = await db.products.findMany()
+
+  return ...
+}
+```
+
+你可以直接：
+
+```
+Component
+   ↓
+DB
+```
+
+而不是：
+
+```
+Component
+   ↓
+fetch('/api/products')
+   ↓
+API Route
+   ↓
+DB
+```
+
+因为 Server Component 本身就在服务器。
+
+所以你可以：
+
+```tsx
+import { db } from '@/lib/db'
+
+export default async function Page() {
+  const data = await db.products.findMany()
+
+  return <Products data={data} />
+}
+```
+
+数据库访问不会进入客户端 bundle。
+
+这带来两个巨大好处：
+
+### **1. 安全**
+
+数据库相关代码：
+
+```
+DB credentials
+ORM
+server-only libraries
+```
+
+不会发送给浏览器。
+
+### **2. 减少客户端 JS**
+
+你不需要为了获取数据，把大量逻辑搬到浏览器。
+
+---
+
+# **还有一个传统 SSR 很难做到的优势：导航**
+
+这其实是 RSC 非常漂亮的地方。
+
+假设你现在：
+
+```
+/products
+```
+
+点击：
+
+```
+/products/123
+```
+
+传统网站可能：
+
+```
+GET /products/123
+↓
+完整 HTML
+↓
+替换整个页面
+```
+
+而 Next.js App Router 可以进行：
+
+```
+点击 Link
+   ↓
+请求 RSC Payload
+   ↓
+拿到新的 React Tree
+   ↓
+只更新需要变化的部分
+```
+
+概念上：
+
+```
+旧 Tree
+
+<App>
+ ├── Header       ← 不变
+ ├── ProductList  ← 不变
+ └── Product      ← 变化
+```
+
+导航之后：
+
+```
+<App>
+ ├── Header       ← 保留
+ ├── ProductList  ← 保留
+ └── Product      ← 更新
+```
+
+所以 RSC Payload 在**客户端导航**场景特别重要。
+
+---
+
+# **这也是为什么你会看到 RSC 请求**
+
+你可能在 Chrome DevTools 里看到：
+
+```
+?_rsc=xxxx
+```
+
+或者类似的请求。
+
+这时候确实是在：
+
+```
+Browser
+    ↓
+请求 RSC Payload
+    ↓
+Server
+    ↓
+执行 Server Components
+    ↓
+返回 RSC Payload
+    ↓
+React 更新客户端 Tree
+```
+
+这个主要是 **App Router 的客户端导航 / RSC 更新机制**。
+
+所以：
+
+**初始访问和后续客户端导航，不要混在一起理解。**
+
+---
+
+# **RSC 真正改变的是“React 的执行位置”**
+
+传统 SSR：
+
+```
+                 React
+                   │
+          ┌────────┴────────┐
+          │                 │
+       Server             Browser
+       render              render
+          │                 │
+          └───────┬─────────┘
+                  │
+              hydration
+```
+
+RSC：
+
+```
+                 React Tree
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+    Server Components      Client Components
+          │                     │
+       Server                Browser
+          │                     │
+     不发 JS                   JS
+                                │
+                            hydration
+```
+
+所以 RSC 不是简单的：
+
+“SSR 的下一代 HTML 渲染技术。”
+
+更准确的是：
+
+**RSC 是一种把 React Component Tree 拆成 Server/Client 两种执行环境的架构。**
+
+---
+
+# **还有一个非常重要的误区**
+
+**RSC 不等于 SSR。**
+
+这两个东西经常被混在一起。
+
+### **SSR**
+
+解决：
+
+**HTML 在哪里生成？**
+
+```
+Server → HTML
+```
+
+### **RSC**
+
+解决：
+
+**React Component 在哪里执行？**
+
+```
+Server Component → Server
+Client Component → Browser
+```
+
+所以它们实际上可以组合：
+
+```
+RSC
+ +
+SSR
+```
+
+这正是 Next.js 做的事情。
+
+---
+
+# **最终你可以这么理解 Next.js**
+
+现代 Next.js 大概是：
+
+```
+                 Next.js
+                    │
+       ┌────────────┼────────────┐
+       │            │            │
+      RSC          SSR         Streaming
+       │            │            │
+Server/Client    HTML 首屏     分块发送
+Components
+       │
+       ▼
+减少 Client JS
+```
+
+所以你刚才的疑惑其实非常准确：
+
+**“如果只是 HTML → 浏览器 → hydration，那 RSC 看起来确实没什么意义。”**
+
+因为 **RSC 的价值根本不在于“比 SSR 更快地生成 HTML”**。
+
+它真正解决的是：
+
+**以前 SSR 虽然把 HTML 在服务器生成了，但为了让 React 接管页面，浏览器最终还是得拿到大量组件 JS。RSC 让大量组件从架构上永远停留在服务器。**
+
+一句话总结：
+
+**SSR 解决“HTML 在哪生成”；RSC 解决“React 组件在哪执行”。**
+
+而 Next.js 把两者组合起来：
+
+```
+Server Components
+       ↓
+服务器执行
+       ↓
+HTML + RSC Payload
+       ↓
+Browser
+       ↓
+只有 Client Components
+       ↓
+下载 JS + Hydration
+```
+
+这就是为什么 RSC 比“传统 SSR + hydration”更有意义。

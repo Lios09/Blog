@@ -1,36 +1,130 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# zx's Blog
 
-## Getting Started
+Thoughts, notes, and things worth keeping.
 
-First, run the development server:
+A personal blog built with the Next.js App Router, with posts stored as local MDX files. The homepage welcomes readers with a handwritten greeting and an animated background, while article pages offer table-of-contents navigation, syntax highlighting, and related posts.
+
+## Features
+
+- **Animated homepage**: A handwritten greeting, background effects, and an entry point to the blog.
+- **Post archive**: Published articles listed in reverse chronological order.
+- **MDX authoring**: GitHub Flavored Markdown with custom React components.
+- **Reading tools**: Automatically extracted headings, estimated reading time, and related posts.
+- **Technical content**: Shiki syntax highlighting, Twoslash type hints, callouts, and components for Mermaid diagrams and KaTeX formulas.
+- **Article metadata**: Page titles, descriptions, and Open Graph article metadata generated from each post's frontmatter.
+
+## Tech Stack
+
+| Area | Tools |
+| --- | --- |
+| Framework | Next.js 16.3.4 · React 19.2 · TypeScript |
+| Styling and interaction | Tailwind CSS 4 · shadcn/ui · Base UI · Motion |
+| Content processing | MDX · gray-matter · Zod · remark / rehype |
+| Code and diagrams | Shiki · Twoslash · Mermaid · KaTeX |
+| Development tools | pnpm · Biome |
+| Deployment configuration | Docker · Docker Compose · Caddy |
+
+## Local Development
+
+Use Node.js 24 to match the major version in the Dockerfile. The project specifies `pnpm@12.5.1` as its package manager.
+
+From the project root, run:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) for the homepage or [http://localhost:3000/blog](http://localhost:3000/blog) for the post archive.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Posts are read directly from local files, so no database setup is required.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Commands
 
-## Learn More
+| Command | Description |
+| --- | --- |
+| `pnpm dev` | Start the development server |
+| `pnpm build` | Create a production build |
+| `pnpm start` | Start the production server after building |
+| `pnpm lint` | Check code with Biome |
+| `pnpm format` | Format files in place with Biome |
 
-To learn more about Next.js, take a look at the following resources:
+## Writing Posts
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Create an `.mdx` file in `content/posts/`. The filename becomes the post's slug: `hello-world.mdx`, for example, is available at `/blog/hello-world`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```mdx
+---
+title: "Hello, World"
+description: "A few words about this blog and why I started writing."
+date: "2026-09-21"
+author: "zx"
+tags:
+  - Notes
+published: true
+---
 
-## Deploy on Vercel
+## Start Here
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Write things down. Give your thoughts a place to grow.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+> [!NOTE]
+> Add a useful aside or a little extra context here.
+```
+
+### Frontmatter
+
+Post frontmatter is validated with Zod. See [`content/schema.ts`](content/schema.ts) for the schema.
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `title` | Yes | A nonempty post title |
+| `description` | Yes | A nonempty post summary |
+| `date` | Yes | Publication date; `YYYY-MM-DD` is recommended |
+| `updated` | No | Last updated date |
+| `author` | No | Author name; defaults to `Your Name`, so setting it explicitly is recommended |
+| `tags` | No | An array of tags; defaults to an empty array |
+| `category` | No | Post category |
+| `published` | No | Whether to include the post in the archive; defaults to `true` |
+| `featured` | No | Featured flag; defaults to `false` |
+| `cover` | No | Cover image path |
+
+Setting `published: false` excludes a post from the archive and the list of routes generated ahead of time. The article page still reads files by slug, so this field does not control access to a post.
+
+Place static images in `public/` and reference them with paths starting with `/`. Custom MDX components are registered in [`mdx-components.tsx`](mdx-components.tsx).
+
+## Deployment
+
+### Node.js Server
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+pnpm start
+```
+
+The server listens on port `3000` by default.
+
+### Docker and Caddy
+
+The repository includes a multi-stage `Dockerfile`, a `compose.yml` file, and a Caddy reverse proxy configuration. Before using them:
+
+1. Enable `output: "standalone"` in `next.config.ts`. The Dockerfile expects `.next/standalone` build output, but this option is not currently enabled.
+2. Replace `blog.example.com` in `Caddyfile` with your domain and point its DNS records to your server.
+3. Make ports `80` and `443` available to Caddy on the server.
+
+Then run:
+
+```bash
+docker compose up -d --build
+```
+
+Caddy forwards requests to `blog:3000` and manages HTTPS for the configured domain. The blog service's `ports: ["3000"]` setting assigns a host port rather than binding to host port `3000`. Access the site through your configured domain when using this setup.
+
+## Customization
+
+- **Site title and description**: Update `metadata` in `app/layout.tsx`.
+- **Homepage copy and links**: Edit `app/page.tsx`.
+- **Post archive copy**: Edit `app/blog/page.tsx`.
+- **Colors and global styles**: Edit `app/globals.css`.
+- **Posts and static assets**: Add files to `content/posts/` and `public/`, respectively.

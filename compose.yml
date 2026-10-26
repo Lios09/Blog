@@ -1,0 +1,29 @@
+services:
+  # Node.js service (use with: docker compose up nextjs-standalone --build)
+  blog:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nextjs-standalone-image
+    # container_name: blog-app
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    ports:
+      - "3000"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

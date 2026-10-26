@@ -1,0 +1,1007 @@
+---
+title: "Wrangler"
+description: "如何搭建一个真实一点的 API：我的 Worker 是什么、要连接哪些 Cloudflare 资源、不同环境怎么隔离、怎么部署"
+date: "2026-09-16"
+author: "Your Name"
+tags:
+  - cloudflare
+  - wrangler
+  - typescript
+category: "Development"
+published: true
+featured: true
+cover: "/images/posts/nextjs-mdx/cover.jpg"
+---
+
+# Wrangler
+---
+
+`wrangler.jsonc` 是理解 Wrangler 的关键之一。
+
+我建议不要把它理解成“Wrangler 的配置文件”这么简单，而是把它看成：
+
+**“告诉 Wrangler：我的 Worker 是什么、要连接哪些 Cloudflare 资源、不同环境怎么隔离、怎么部署。”**
+
+---
+
+# **1. 先看一个完整例子**
+
+假设我们做一个真实一点的 API：
+
+```text title="my-api/wrangler.jsonc"
+my-api/
+├── src/
+│   └── index.ts
+├── migrations/
+│   ├── 0001_init.sql
+│   └── 0002_add_profile.sql
+├── wrangler.jsonc
+├── package.json
+└── tsconfig.json
+```
+
+一个比较典型的 `wrangler.jsonc`：
+
+```json
+{
+  "name": "my-api",
+  "main": "src/index.ts",
+
+  "compatibility_date": "2026-09-15",
+
+  "vars": {
+    "APP_ENV": "production"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "my-api-db",
+      "database_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "my-api-files"
+    }
+  ]
+}
+```
+
+先别急着记字段。
+
+我们逐个拆。
+
+---
+
+# **2. `name`**
+
+```json
+{
+  "name": "my-api"
+}
+```
+
+这是 Worker 的名字。
+
+最终 Cloudflare 上会有一个 Worker：
+
+```
+my-api
+```
+
+例如部署：
+
+```bash
+npx wrangler deploy
+```
+
+Wrangler 就知道：
+
+我要把这个项目部署成 `my-api` 这个 Worker。
+
+---
+
+# **3. `main`**
+
+```json
+{
+  "main": "src/index.ts"
+}
+```
+
+告诉 Wrangler：
+
+Worker 的入口文件在哪里？
+
+例如：
+
+```
+src/index.ts
+```
+
+里面：
+
+```tsx
+export default {
+  async fetch(request, env) {
+    return new Response("Hello");
+  },
+};
+```
+
+所以：
+
+```
+wrangler.jsonc
+       │
+       │ main
+       ▼
+src/index.ts
+       │
+       ▼
+Worker
+```
+
+---
+
+# **4. `compatibility_date`**
+
+这是一个**非常重要但经常被忽略的字段**。
+
+```json
+{
+  "compatibility_date": "2026-09-15"
+}
+```
+
+它不是：
+
+“Worker 只在 2026-09-15 工作。”
+
+而更像：
+
+**“告诉 Cloudflare，我希望 Worker Runtime 按这个日期对应的兼容行为运行。”**
+
+Cloudflare Workers 的 Runtime 会持续变化。
+
+例如未来 Cloudflare 改变某个 API 行为：
+
+```
+旧行为 ────────────────> 新行为
+```
+
+如果你的 Worker 没有明确 compatibility date，就可能受到 Runtime 行为变化的影响。
+
+指定：
+
+```json
+"compatibility_date": "2026-09-15"
+```
+
+相当于给项目建立一个兼容性基线。
+
+---
+
+# **5. `vars`**
+
+例如：
+
+```json
+{
+  "vars": {
+    "APP_ENV": "production",
+    "API_VERSION": "v1"
+  }
+}
+```
+
+代码里：
+
+```tsx
+interface Env {
+  APP_ENV: string;
+  API_VERSION: string;
+}
+
+export default {
+  async fetch(request, env: Env) {
+    console.log(env.APP_ENV);
+
+    return Response.json({
+      version: env.API_VERSION,
+    });
+  },
+};
+```
+
+也就是：
+
+```
+wrangler.jsonc
+       │
+       │ vars
+       ▼
+     Worker
+       │
+       ▼
+    env.APP_ENV
+    env.API_VERSION
+```
+
+---
+
+# **6. 但是 Secret 不应该放 `vars`**
+
+这是非常重要的。
+
+不要这样：
+
+```json
+{
+  "vars": {
+    "STRIPE_SECRET_KEY": "sk_xxxxxxxxx"
+  }
+}
+```
+
+因为 `vars` 是普通配置。
+
+对于：
+
+```
+API Key
+Database password
+JWT secret
+Stripe secret
+OAuth secret
+```
+
+应该使用 Secret：
+
+```bash
+npx wrangler secret put STRIPE_SECRET_KEY
+```
+
+然后代码：
+
+```tsx
+env.STRIPE_SECRET_KEY
+```
+
+所以可以记成：
+
+```
+普通配置
+     ↓
+vars
+
+敏感信息
+     ↓
+wrangler secret
+```
+
+---
+
+# **7. 最重要的：Bindings**
+
+如果你只记住 Wrangler 一个概念，我建议就是：
+
+**Binding**
+
+例如 D1：
+
+```json
+{
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "my-api-db",
+      "database_id": "xxxxxxxx"
+    }
+  ]
+}
+```
+
+这里：
+
+```json
+"binding": "DB"
+```
+
+意味着：
+
+```
+Cloudflare D1
+      │
+      ▼
+     DB
+      │
+      ▼
+   env.DB
+```
+
+Worker：
+
+```tsx
+env.DB
+```
+
+就可以访问 D1。
+
+---
+
+# **8. D1 的配置**
+
+完整一点：
+
+```json
+"d1_databases": [
+  {
+    "binding": "DB",
+    "database_name": "my-api-db",
+    "database_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "migrations_dir": "migrations"
+  }
+]
+```
+
+分别是什么？
+
+### **`binding`**
+
+```json
+"binding": "DB"
+```
+
+代码里的：
+
+```tsx
+env.DB
+```
+
+---
+
+### **`database_name`**
+
+```json
+"database_name": "my-api-db"
+```
+
+Cloudflare D1 的名字。
+
+---
+
+### **`database_id`**
+
+```json
+"database_id": "xxxxxxxx"
+```
+
+Cloudflare 创建 D1 时给你的唯一 ID。
+
+例如：
+
+```bash
+npx wrangler d1 create my-api-db
+```
+
+会返回它。
+
+---
+
+### **`migrations_dir`**
+
+```json
+"migrations_dir": "migrations"
+```
+
+告诉 Wrangler：
+
+```
+migrations/
+├── 0001_init.sql
+├── 0002_add_user.sql
+└── 0003_add_index.sql
+```
+
+Migration 在哪里。
+
+---
+
+# **9. R2 也是 Binding**
+
+假设你有一个 R2 Bucket：
+
+```
+my-api-files
+```
+
+配置：
+
+```json
+"r2_buckets": [
+  {
+    "binding": "BUCKET",
+    "bucket_name": "my-api-files"
+  }
+]
+```
+
+代码：
+
+```tsx
+await env.BUCKET.put(
+  "hello.txt",
+  "Hello World"
+);
+```
+
+读取：
+
+```tsx
+const object = await env.BUCKET.get("hello.txt");
+```
+
+所以：
+
+```
+R2 Bucket
+    │
+    ▼
+  BUCKET
+    │
+    ▼
+env.BUCKET
+```
+
+---
+
+# **10. KV**
+
+KV 类似：
+
+```json
+"kv_namespaces": [
+  {
+    "binding": "CACHE",
+    "id": "xxxxxxxxxxxxxxxx"
+  }
+]
+```
+
+代码：
+
+```tsx
+await env.CACHE.put(
+  "user:123",
+  "Alice"
+);
+```
+
+读取：
+
+```tsx
+const value = await env.CACHE.get("user:123");
+```
+
+又是同一个思想：
+
+```
+Cloudflare Resource
+        │
+        ▼
+     binding
+        │
+        ▼
+      env.X
+```
+
+---
+
+# **11. Durable Objects**
+
+Durable Objects 稍微特殊一点。
+
+例如：
+
+```json
+{
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CHAT",
+        "class_name": "ChatRoom"
+      }
+    ]
+  }
+}
+```
+
+然后代码里：
+
+```tsx
+env.CHAT
+```
+
+拿到 Durable Object namespace。
+
+这里会涉及：
+
+```
+Durable Object
+      │
+      ├── Worker binding
+      │
+      └── class
+```
+
+如果开始使用 DO，还需要考虑 migration，因为 Durable Objects 的 class 需要版本迁移。
+
+---
+
+# **12. `wrangler.jsonc` 真正厉害的地方：Environment**
+
+这才是生产项目里非常重要的一部分。
+
+假设：
+
+```
+开发环境
+development
+
+测试环境
+staging
+
+生产环境
+production
+```
+
+你绝对不希望：
+
+```
+本地开发
+   │
+   ▼
+Production D1
+```
+
+然后一个：
+
+```sql
+DROP TABLE users;
+```
+
+把生产搞炸。
+
+所以我们需要环境隔离。
+
+---
+
+# **13. Environment 的基本思想**
+
+可以这样：
+
+```json
+{
+  "name": "my-api",
+  "main": "src/index.ts",
+
+  "env": {
+    "staging": {
+      "name": "my-api-staging"
+    },
+
+    "production": {
+      "name": "my-api-production"
+    }
+  }
+}
+```
+
+于是：
+
+```bash
+npx wrangler deploy --env staging
+```
+
+部署：
+
+```
+my-api-staging
+```
+
+而：
+
+```bash
+npx wrangler deploy --env production
+```
+
+部署：
+
+```
+my-api-production
+```
+
+---
+
+# **14. 更实际的设计**
+
+真正项目通常是：
+
+```
+                    Git
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+       staging              production
+          │                     │
+          ▼                     ▼
+ Worker staging          Worker production
+          │                     │
+          ▼                     ▼
+      D1 staging            D1 production
+```
+
+比如：
+
+```json
+{
+  "name": "my-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-15",
+
+  "env": {
+    "staging": {
+      "name": "my-api-staging",
+
+      "vars": {
+        "APP_ENV": "staging"
+      },
+
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "my-api-staging-db",
+          "database_id": "STAGING_DATABASE_ID",
+          "migrations_dir": "migrations"
+        }
+      ]
+    },
+
+    "production": {
+      "name": "my-api-production",
+
+      "vars": {
+        "APP_ENV": "production"
+      },
+
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "my-api-production-db",
+          "database_id": "PRODUCTION_DATABASE_ID",
+          "migrations_dir": "migrations"
+        }
+      ]
+    }
+  }
+}
+```
+
+注意一个非常漂亮的地方：
+
+**代码完全不用改变。**
+
+代码永远：
+
+```tsx
+env.DB
+```
+
+但是：
+
+```
+staging
+    │
+    ▼
+env.DB
+    │
+    ▼
+staging D1
+```
+
+生产：
+
+```
+production
+    │
+    ▼
+env.DB
+    │
+    ▼
+production D1
+```
+
+这就是 Binding 的价值。
+
+---
+
+# **15. `wrangler dev` 又怎么知道环境？**
+
+例如：
+
+```bash
+npx wrangler dev
+```
+
+默认开发。
+
+如果：
+
+```bash
+npx wrangler dev --env staging
+```
+
+就是 staging 环境。
+
+部署同理：
+
+```bash
+npx wrangler deploy --env staging
+```
+
+和：
+
+```bash
+npx wrangler deploy --env production
+```
+
+对应不同环境。
+
+---
+
+# **16. 我比较推荐的项目结构**
+
+如果你以后认真做 Cloudflare 项目，我比较推荐：
+
+```
+my-api/
+│
+├── src/
+│   ├── index.ts
+│   ├── routes/
+│   │   ├── users.ts
+│   │   └── auth.ts
+│   ├── services/
+│   └── types.ts
+│
+├── migrations/
+│   ├── 0001_init.sql
+│   ├── 0002_users.sql
+│   └── 0003_indexes.sql
+│
+├── wrangler.jsonc
+├── package.json
+├── tsconfig.json
+└── README.md
+```
+
+而不是：
+
+```
+dev-wrangler.json
+prod-wrangler.json
+staging-wrangler.json
+```
+
+我通常更推荐**一个 `wrangler.jsonc` + 多个 environment**。
+
+---
+
+# **17. 一个比较完整的生产级例子**
+
+可以把它理解成这样：
+
+```json
+{
+  "name": "my-api",
+  "main": "src/index.ts",
+
+  "compatibility_date": "2026-09-15",
+
+  "observability": {
+    "enabled": true
+  },
+
+  "env": {
+    "staging": {
+      "name": "my-api-staging",
+
+      "vars": {
+        "APP_ENV": "staging"
+      },
+
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "my-api-staging-db",
+          "database_id": "STAGING_ID",
+          "migrations_dir": "migrations"
+        }
+      ],
+
+      "r2_buckets": [
+        {
+          "binding": "BUCKET",
+          "bucket_name": "my-api-staging-files"
+        }
+      ]
+    },
+
+    "production": {
+      "name": "my-api-production",
+
+      "vars": {
+        "APP_ENV": "production"
+      },
+
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "my-api-production-db",
+          "database_id": "PRODUCTION_ID",
+          "migrations_dir": "migrations"
+        }
+      ],
+
+      "r2_buckets": [
+        {
+          "binding": "BUCKET",
+          "bucket_name": "my-api-production-files"
+        }
+      ]
+    }
+  }
+}
+```
+
+这样整个系统就很清楚：
+
+```
+                  wrangler.jsonc
+                       │
+          ┌────────────┴────────────┐
+          │                         │
+       staging                  production
+          │                         │
+    ┌─────┴─────┐             ┌─────┴─────┐
+    │           │             │           │
+   Worker       D1           Worker       D1
+    │           │             │           │
+    │          R2             │          R2
+    │                         │
+    └──── env ────┘           └──── env ────┘
+```
+
+---
+
+# **18. 有一个坑：环境不是“完全复制”**
+
+这是很多刚接触 Wrangler 的人容易踩的坑。
+
+你写：
+
+```json
+"env": {
+  "production": {
+    "name": "my-api-production"
+  }
+}
+```
+
+**不要简单理解成：**
+
+production 自动继承根配置里的所有东西。
+
+Wrangler 的 environment 配置存在一些继承/非继承规则，尤其是 bindings、routes、triggers 等配置，实际设计时不能想当然地认为所有字段都会自动继承。
+
+所以我的建议是：
+
+**生产项目里，关键资源 binding 在 environment 下明确写出来。**
+
+例如：
+
+```json
+"production": {
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "my-api-production-db",
+      "database_id": "..."
+    }
+  ]
+}
+```
+
+这样看到配置就知道生产到底连接哪个数据库。
+
+---
+
+# **19. 最后建立一个“脑模型”**
+
+以后看到：
+
+```json
+{
+  "name": "...",
+  "main": "...",
+  "vars": {},
+  "d1_databases": [],
+  "r2_buckets": [],
+  "kv_namespaces": [],
+  "durable_objects": {},
+  "env": {}
+}
+```
+
+不要把它看成一堆 JSON。
+
+把它翻译成人话：
+
+```
+                    Wrangler
+                       │
+              “我要部署什么？”
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+       name           main       compatibility
+        │              │
+        ▼              ▼
+     Worker         入口代码
+                       │
+                       ▼
+                  ┌───────────┐
+                  │ bindings  │
+                  └─────┬─────┘
+                        │
+            ┌───────────┼───────────┐
+            ▼           ▼           ▼
+           D1          R2          KV
+            │           │           │
+           DB        BUCKET       CACHE
+            │           │           │
+            └───────────┼───────────┘
+                        ▼
+                      env.X
+
+                 env
+                  │
+          ┌───────┴───────┐
+          ▼               ▼
+       staging        production
+```
+
+**这就是 `wrangler.jsonc` 的核心。**
+
+如果你接下来要做真实项目，我建议下一步重点搞懂 **`wrangler.jsonc` + `env` + D1 migration + Secret** 四者是怎么配合的。尤其是一个常见的生产工作流：
+
+```
+Git push
+   ↓
+GitHub Actions
+   ↓
+staging Worker + staging D1
+   ↓
+测试
+   ↓
+production migration
+   ↓
+production Worker
+```
+
+这一步弄明白之后，你基本就从“会用 Wrangler”进入“会用 Wrangler 做生产项目”了。

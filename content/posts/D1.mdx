@@ -1,0 +1,1049 @@
+---
+title: "Cloudflare-D1"
+description: "The easiest way to add SQL to your application"
+date: "2026-10-06"
+author: "Lios09"
+tags:
+  - DB
+  - Cloudflare
+  - Cloudflare Workers
+category: "Development"
+published: true
+featured: true
+cover: "/images/posts/nextjs-mdx/cover.jpg"
+---
+
+---
+
+Schema-SQL-Migration-Worker API：
+
+```
+TypeScript Schema
+       │
+       │ drizzle-kit generate
+       ▼
+SQL Migration
+       │
+       │ Wrangler
+       ▼
+      D1
+       │
+       │ drizzle-orm
+       ▼
+Worker API
+```
+
+这里有一个很重要的分工：
+
+- **Drizzle ORM**：TypeScript ↔ 数据库查询
+- **Drizzle Kit**：Schema → Migration
+- **Wrangler**：Cloudflare Worker / D1 的开发、部署和 D1 migration 执行
+- **D1**：真正存数据
+
+Drizzle 官方把这种方式称为 **codebase-first**：TypeScript schema 是数据库结构的 source of truth，Drizzle Kit 根据 schema 变化生成 SQL migration。
+
+---
+
+# **一、先看最终项目**
+
+我们做一个用户 API：
+
+```
+GET  /users
+POST /users
+```
+
+项目：
+
+```
+my-api/
+├── src/
+│   ├── db/
+│   │   └── schema.ts
+│   └── index.ts
+│
+├── migrations/
+│   ├── 0000_xxx/
+│   │   ├── migration.sql
+│   │   └── snapshot.json
+│   └── 0001_xxx/
+│       ├── migration.sql
+│       └── snapshot.json
+│
+├── drizzle.config.ts
+├── wrangler.jsonc
+├── package.json
+└── tsconfig.json
+```
+
+注意：
+
+**这里的 migration 目录和我们之前纯 Wrangler 的例子稍微不同。**
+
+Drizzle Kit 默认会生成自己的 migration 结构；Cloudflare D1 现在也支持通过 `migrations_pattern` 配置识别这种嵌套 migration 布局。
+
+---
+
+# **二、安装**
+
+先创建 Worker：
+
+```bash
+npm create cloudflare@latest my-api
+cd my-api
+npm install
+```
+
+安装 Drizzle：
+
+```bash
+npm install drizzle-orm
+npm install -D drizzle-kit
+```
+
+Drizzle 官方的 D1 文档也是使用 `drizzle-orm` + `drizzle-kit` 这套组合。
+
+---
+
+# **三、先创建线上 D1**
+
+这一步还是 Wrangler：
+
+```bash
+npx wrangler login
+```
+
+然后：
+
+```bash
+npx wrangler d1 create my-api-db
+```
+
+假设得到：
+
+```
+database_name = "my-api-db"
+database_id   = "abc123..."
+```
+
+注意：
+
+**这个命令创建的是 Cloudflare 上的 D1，不是本地数据库。**
+
+---
+
+# **四、配置 Wrangler**
+
+`wrangler.jsonc`：
+
+```json
+{
+  "name": "my-api",
+  "main": "src/index.ts",
+
+  "compatibility_date": "2026-09-15",
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "my-api-db",
+      "database_id": "abc123...",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
+```
+
+这里：
+
+```
+binding = DB
+```
+
+最终 Worker 里面：
+
+```tsx
+env.DB
+```
+
+就是 D1。
+
+Drizzle 对 D1 的基本连接方式也是：
+
+```tsx
+const db = drizzle(env.DB);
+```
+
+---
+
+# **五、写 TypeScript Schema**
+
+现在最关键的一步来了。
+
+创建：
+
+```
+src/db/schema.ts
+```
+
+写：
+
+```tsx
+import { sqliteTable, integer, text } from "drizzle-orm/sqlite-core";
+
+export const users = sqliteTable("users", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+
+  name: text("name").notNull(),
+
+  email: text("email").notNull().unique(),
+
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+```
+
+注意：
+
+**我们现在没有写 SQL。**
+
+没有：
+
+```sql
+CREATE TABLE users ...
+```
+
+而是写 TypeScript。
+
+这就是 Drizzle 的核心体验：
+
+```
+schema.ts
+    │
+    │ TypeScript
+    ▼
+Drizzle Kit
+    │
+    │ 自动 diff
+    ▼
+migration.sql
+```
+
+---
+
+# **六、告诉 Drizzle Schema 在哪里**
+
+创建：
+
+```
+drizzle.config.ts
+```
+
+内容：
+
+```tsx
+import { defineConfig } from "drizzle-kit";
+
+export default defineConfig({
+  schema: "./src/db/schema.ts",
+  out: "./migrations",
+  dialect: "sqlite",
+});
+```
+
+这里最重要的是：
+
+```tsx
+schema: "./src/db/schema.ts"
+```
+
+以及：
+
+```tsx
+out: "./migrations"
+```
+
+意思就是：
+
+我的数据库模型在这里；你生成的 migration 放这里。
+
+Drizzle Kit 的 `generate` 会读取当前 schema，并和之前 migration 的 snapshot 比较，然后生成新的 SQL migration。
+
+---
+
+# **七、第一次生成 Migration**
+
+现在执行：
+
+```bash
+npx drizzle-kit generate --name init
+```
+
+Drizzle 会分析：
+
+```
+src/db/schema.ts
+```
+
+发现你定义了：
+
+```
+users
+ ├── id
+ ├── name
+ ├── email
+ └── created_at
+```
+
+于是自动生成 migration。
+
+大概会得到：
+
+```
+migrations/
+└── 0000_init/
+    ├── migration.sql
+    └── snapshot.json
+```
+
+`migration.sql` 里面类似：
+
+```sql
+CREATE TABLE `users` (
+  `id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+  `name` text NOT NULL,
+  `email` text NOT NULL,
+  `created_at` text NOT NULL
+);
+
+CREATE UNIQUE INDEX `users_email_unique`
+ON `users` (`email`);
+```
+
+**这个 SQL 是 Drizzle 生成的。**
+
+所以现在你已经可以看到：
+
+```
+                    你写
+                      │
+                      ▼
+              src/db/schema.ts
+                      │
+                      │ generate
+                      ▼
+             migration.sql
+                      │
+                      │ apply
+                      ▼
+                    D1
+```
+
+---
+
+# **八、这时候不要直接修改 migration**
+
+假设生成了：
+
+```
+0000_init
+```
+
+然后 commit：
+
+```bash
+git add .
+git commit -m "init database schema"
+```
+
+之后如果要修改数据库：
+
+**修改 Schema，而不是修改旧 migration。**
+
+例如现在我们增加：
+
+```tsx
+age: integer("age"),
+```
+
+变成：
+
+```tsx
+export const users = sqliteTable("users", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+
+  name: text("name").notNull(),
+
+  email: text("email").notNull().unique(),
+
+  age: integer("age"),
+
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+```
+
+然后：
+
+```bash
+npx drizzle-kit generate --name add-age
+```
+
+Drizzle 会比较：
+
+```
+旧 Schema
+   ↓
+新 Schema
+```
+
+发现：
+
+```
+users
+  + age
+```
+
+于是生成：
+
+```
+migrations/
+├── 0000_init/
+│   ├── migration.sql
+│   └── snapshot.json
+│
+└── 0001_add-age/
+    ├── migration.sql
+    └── snapshot.json
+```
+
+里面可能是：
+
+```sql
+ALTER TABLE `users`
+ADD `age` integer;
+```
+
+这就是我们想要的 migration。
+
+---
+
+# **九、现在进入本地 D1**
+
+这里有一个特别容易混淆的地方：
+
+```
+Drizzle generate
+```
+
+**不会修改数据库。**
+
+它只是：
+
+```
+Schema → SQL
+```
+
+所以：
+
+```bash
+npx drizzle-kit generate
+```
+
+只是生成文件。
+
+真正把 migration 应用到 D1，是下一步。
+
+---
+
+# **十、本地应用 Migration**
+
+因为我们用的是 Cloudflare D1，所以这里可以让 Wrangler 管理 migration：
+
+```bash
+npx wrangler d1 migrations apply my-api-db --local
+```
+
+这时候：
+
+```
+migrations/
+      │
+      ▼
+ Wrangler
+      │
+      ▼
+Local D1
+```
+
+Cloudflare 官方的 `d1 migrations apply` 支持 `--local` 和 `--remote` 两种模式；`--local` 用于本地开发，`--remote` 用于远程 D1。
+
+---
+
+# **十一、启动 Worker**
+
+现在：
+
+```bash
+npx wrangler dev
+```
+
+Worker 启动。
+
+然后：
+
+```
+http://localhost:8787
+```
+
+访问的是：
+
+```
+本地 Worker
+    │
+    ▼
+Local D1
+```
+
+而不是生产数据库。
+
+---
+
+# **十二、Worker 中使用 Drizzle**
+
+现在修改：
+
+```
+src/index.ts
+```
+
+```tsx
+import { drizzle } from "drizzle-orm/d1";
+import { users } from "./db/schema";
+
+interface Env {
+  DB: D1Database;
+}
+
+export default {
+  async fetch(
+    request: Request,
+    env: Env,
+  ) {
+    const db = drizzle(env.DB);
+
+    const url = new URL(request.url);
+
+    if (
+      url.pathname === "/users" &&
+      request.method === "GET"
+    ) {
+      const result = await db
+        .select()
+        .from(users);
+
+      return Response.json(result);
+    }
+
+    if (
+      url.pathname === "/users" &&
+      request.method === "POST"
+    ) {
+      const body = await request.json<{
+        name: string;
+        email: string;
+        age?: number;
+      }>();
+
+      await db
+        .insert(users)
+        .values({
+          name: body.name,
+          email: body.email,
+          age: body.age,
+        });
+
+      return Response.json(
+        { ok: true },
+        { status: 201 },
+      );
+    }
+
+    return new Response("Not Found", {
+      status: 404,
+    });
+  },
+};
+```
+
+这里非常漂亮：
+
+```tsx
+const db = drizzle(env.DB);
+```
+
+然后：
+
+```tsx
+db.select()
+db.insert()
+```
+
+完全不需要自己写：
+
+```sql
+SELECT ...
+INSERT ...
+```
+
+---
+
+# **十三、测试**
+
+启动：
+
+```bash
+npx wrangler dev
+```
+
+POST：
+
+```bash
+curl -X POST http://localhost:8787/users \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Alice","email":"alice@example.com","age":25}'
+```
+
+然后：
+
+```bash
+curl http://localhost:8787/users
+```
+
+得到：
+
+```json
+[
+  {
+    "id": 1,
+    "name": "Alice",
+    "email": "alice@example.com",
+    "age": 25,
+    "createdAt": "..."
+  }
+]
+```
+
+整个本地链路：
+
+```
+Browser / curl
+      │
+      ▼
+wrangler dev
+      │
+      ▼
+Worker
+      │
+      ▼
+Drizzle ORM
+      │
+      ▼
+Local D1
+```
+
+---
+
+# **十四、然后我们继续修改 Schema**
+
+假设产品经理突然说：
+
+用户还要有手机号。
+
+你不用自己写：
+
+```sql
+ALTER TABLE...
+```
+
+而是修改：
+
+```tsx
+export const users = sqliteTable("users", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+
+  name: text("name").notNull(),
+
+  email: text("email").notNull().unique(),
+
+  age: integer("age"),
+
+  phone: text("phone"),
+
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+```
+
+然后：
+
+```bash
+npx drizzle-kit generate --name add-phone
+```
+
+得到：
+
+```
+0002_add-phone/
+    migration.sql
+    snapshot.json
+```
+
+大概：
+
+```sql
+ALTER TABLE `users`
+ADD `phone` text;
+```
+
+然后本地：
+
+```bash
+npx wrangler d1 migrations apply my-api-db --local
+```
+
+再测试。
+
+---
+
+# **十五、最后部署生产**
+
+确认：
+
+```
+Schema
+   ↓
+Migration
+   ↓
+Local D1
+   ↓
+Worker
+   ↓
+测试
+```
+
+都没问题。
+
+这时候先把 production D1 migration 执行掉：
+
+```bash
+npx wrangler d1 migrations apply my-api-db --remote
+```
+
+Cloudflare 会把尚未执行的 migration 应用到远程 D1。官方文档说明 `apply` 会按顺序应用未执行 migration，并记录 migration 状态；如果 migration 出错，会回滚该次 migration。
+
+然后部署 Worker：
+
+```bash
+npx wrangler deploy
+```
+
+最终：
+
+```
+                 Git
+                  │
+                  ▼
+          ┌───────────────┐
+          │ schema.ts     │
+          └───────┬───────┘
+                  │
+           drizzle generate
+                  │
+                  ▼
+             migrations
+                  │
+          ┌───────┴────────┐
+          │                │
+       --local          --remote
+          │                │
+          ▼                ▼
+      Local D1       Production D1
+                           │
+                           │
+                    wrangler deploy
+                           │
+                           ▼
+                    Production Worker
+```
+
+---
+
+# **十六、所以到底谁负责什么？**
+
+这是最值得记住的一张表：
+
+| **工具** | **负责什么** |
+| --- | --- |
+| **Drizzle Schema** | 描述数据库结构 |
+| **Drizzle Kit** | Schema → SQL Migration |
+| **Wrangler** | 管理/部署 Cloudflare |
+| **D1** | 存数据 |
+| **Drizzle ORM** | Worker 中查询 D1 |
+
+也就是：
+
+```
+                TypeScript
+                    │
+                    ▼
+             Drizzle Schema
+                    │
+                    │ generate
+                    ▼
+              SQL Migration
+                    │
+                    │ Wrangler
+                    ▼
+                   D1
+                    ▲
+                    │
+                    │ Drizzle ORM
+                    │
+                 Worker
+```
+
+---
+
+# **十七、一个非常重要的区别：`generate`、`push`、`migrate`**
+
+Drizzle 有三个命令特别容易搞混。
+
+### **`generate`**
+
+```bash
+npx drizzle-kit generate
+```
+
+意思：
+
+**根据 Schema 生成 migration 文件。**
+
+不会直接修改数据库。
+
+---
+
+### **`push`**
+
+```bash
+npx drizzle-kit push
+```
+
+意思更接近：
+
+**把当前 Schema 直接推到数据库。**
+
+适合快速实验、开发阶段快速迭代；Drizzle 官方也明确把 `push` 定位为快速测试 schema 的方式。
+
+生产环境我一般不建议把它作为主要 migration 流程。
+
+---
+
+### **`migrate`**
+
+```bash
+npx drizzle-kit migrate
+```
+
+意思：
+
+**执行 Drizzle 生成的 migration。**
+
+不过对于我们这个 Cloudflare D1 + Wrangler 项目，我更倾向于让：
+
+```bash
+npx drizzle-kit generate
+```
+
+负责**生成 migration**
+
+然后：
+
+```bash
+npx wrangler d1 migrations apply
+```
+
+负责**把 migration 应用到 D1**。
+
+这样 Cloudflare 的 D1 migration 生命周期由 Wrangler 管理，会更清晰。Cloudflare 自己的 D1 migration 系统也提供本地/远程 apply。
+
+---
+
+# **十八、我推荐的实际工作流**
+
+以后你可以形成肌肉记忆：
+
+### **第一次**
+
+```bash
+npx wrangler d1 create my-api-db
+```
+
+然后：
+
+```
+schema.ts
+wrangler.jsonc
+drizzle.config.ts
+```
+
+---
+
+### **每次修改数据库**
+
+```
+① 修改 schema.ts
+
+        ↓
+
+② generate
+
+npx drizzle-kit generate --name add-something
+
+        ↓
+
+③ 查看 migration.sql
+
+        ↓
+
+④ 本地执行
+
+npx wrangler d1 migrations apply my-api-db --local
+
+        ↓
+
+⑤ wrangler dev 测试
+
+        ↓
+
+⑥ commit
+```
+
+最后上线：
+
+```
+⑦
+
+npx wrangler d1 migrations apply my-api-db --remote
+
+        ↓
+
+⑧
+
+npx wrangler deploy
+```
+
+---
+
+# **十九、还有一个生产级细节**
+
+如果你有：
+
+```
+staging
+production
+```
+
+**不要让它们共用一个 D1。**
+
+最好：
+
+```
+my-api-staging-db
+my-api-production-db
+```
+
+然后：
+
+```
+                 schema.ts
+                    │
+                    ▼
+              Drizzle generate
+                    │
+                    ▼
+                migrations
+                 /       \
+                /         \
+        staging           production
+           │                   │
+           ▼                   ▼
+      staging D1          production D1
+```
+
+Migration 文件是同一套：
+
+```
+migrations/
+├── 0000_init/
+├── 0001_add-age/
+└── 0002_add-phone/
+```
+
+只是分别应用到不同数据库。
+
+这样你的**数据库结构版本是一致的，但数据完全隔离**。
+
+---
+
+## **最后，你现在应该建立这个认知**
+
+以前你理解的是：
+
+```
+我手写 SQL
+   ↓
+Wrangler
+   ↓
+D1
+```
+
+用了 Drizzle 后变成：
+
+```
+        TypeScript
+            │
+            ▼
+       schema.ts
+            │
+            │ Drizzle Kit
+            ▼
+       migration.sql
+            │
+            │ Wrangler
+            ▼
+           D1
+```
+
+而运行时又是另一条线路：
+
+```
+HTTP Request
+     │
+     ▼
+Cloudflare Worker
+     │
+     │ drizzle-orm
+     ▼
+    env.DB
+     │
+     ▼
+     D1
+```
+
+**“Schema 管结构、Drizzle Kit 管 migration、Wrangler 管 Cloudflare、Drizzle ORM 管查询”**——把这四句话记住，整个架构就不会乱。
+
+我建议直接做一个**`staging + production + GitHub Actions` 的完整项目**。那时可以把 migration 放进 CI/CD，做到 `git push → 自动部署 staging → 测试 → production`，这才是真正用于生产时的样子。
