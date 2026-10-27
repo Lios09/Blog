@@ -1,7 +1,7 @@
+import Link from "next/link";
 import { BlogHeroBackground } from "@/components/blog-hero-background";
 import AppleHelloEffectHero from "@/components/ui/apple-hello-effect-hero";
 import { Highlighter } from "@/components/ui/highlighter";
-import Link from "next/link";
 
 export default function Home() {
   return (
@@ -11,7 +11,7 @@ export default function Home() {
         <AppleHelloEffectHero />
       </header>
 
-      <div className="font-mono absolute inset-x-0 top-70 z-20 flex flex-col items-center text-center gap-2">
+      <div className="absolute inset-x-0 top-70 z-20 flex flex-col items-center gap-2 text-center font-mono">
         <p>
           Thoughts,
           <Highlighter action="underline" color="#FF9800">
