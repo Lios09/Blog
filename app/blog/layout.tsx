@@ -1,6 +1,5 @@
-import type { Metadata } from "next";
-import { ThemeProvider } from "next-themes";
 import { ThemeSwitcher } from "@/components/theme-switcher";
+import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "Blog",
@@ -10,19 +9,10 @@ export const metadata: Metadata = {
 const BlogLayout = ({ children }: LayoutProps<"/blog">) => {
   return (
     <main>
-      <ThemeProvider
-        enableSystem
-        disableTransitionOnChange
-        enableColorScheme
-        storageKey="theme"
-        defaultTheme="system"
-        attribute="class"
-      >
-        {children}
-        <div className="fixed top-3 right-3">
-          <ThemeSwitcher />
-        </div>
-      </ThemeProvider>
+      {children}
+      <div className="fixed top-3 right-3">
+        <ThemeSwitcher />
+      </div>
     </main>
   );
 };
