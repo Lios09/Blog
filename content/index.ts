@@ -1,6 +1,5 @@
-import { getPostSlugs, getPostSource } from "./repository";
-
 import { parsePost } from "./parser";
+import { getPostSlugs, getPostSource } from "./repository";
 import { transformPost } from "./transformer";
 
 import type { Post } from "./types";

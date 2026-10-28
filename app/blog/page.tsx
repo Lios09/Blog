@@ -1,8 +1,8 @@
+import Link from "next/link";
 import { TextRoll } from "@/components/text-roll";
 import { Signature } from "@/components/ui/signature";
 import { getAllPosts } from "@/content";
 import { formatDate } from "@/lib/utils";
-import Link from "next/link";
 
 const HomeBlog = () => {
   const posts = getAllPosts();

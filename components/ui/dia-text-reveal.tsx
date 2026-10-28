@@ -1,15 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import {
   animate,
+  type HTMLMotionProps,
   motion,
   useInView,
   useMotionValue,
   useReducedMotion,
   useTransform,
-  type HTMLMotionProps,
 } from "motion/react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -66,10 +66,11 @@ function measureWidths(el: HTMLElement, texts: string[]) {
 /**
  * Props for {@link DiaTextReveal}.
  */
-export interface DiaTextRevealProps extends Omit<
-  HTMLMotionProps<"span">,
-  "ref" | "children" | "style" | "animate" | "transition" | "color"
-> {
+export interface DiaTextRevealProps
+  extends Omit<
+    HTMLMotionProps<"span">,
+    "ref" | "children" | "style" | "animate" | "transition" | "color"
+  > {
   /**
    * Text to reveal. Pass multiple strings to rotate when {@link DiaTextRevealProps.repeat} is `true`.
    */
@@ -138,7 +139,7 @@ export function DiaTextReveal({
   fixedWidth = false,
   ...props
 }: DiaTextRevealProps) {
-  const texts = Array.isArray(text) ? text : [text];
+  const texts = useMemo(() => (Array.isArray(text) ? text : [text]), [text]);
   const isMulti = texts.length > 1;
   const prefersReducedMotion = useReducedMotion();
 
@@ -183,7 +184,7 @@ export function DiaTextReveal({
     const el = spanRef.current;
     if (!el || !isMulti) return;
     setMeasuredWidths(measureWidths(el, texts));
-  }, [Array.isArray(text) ? text.join("\0") : text]);
+  }, [isMulti, texts]);
 
   playRef.current = () => {
     const { duration, delay, repeat, repeatDelay, texts } = optsRef.current;
@@ -237,7 +238,7 @@ export function DiaTextReveal({
   return (
     <motion.span
       ref={spanRef}
-      className={cn("align-bottom leading-[100%] text-inherit", className)}
+      className={cn("align-bottom text-inherit leading-[100%]", className)}
       style={{
         transform: "translateY(-2px)",
         color: "transparent",

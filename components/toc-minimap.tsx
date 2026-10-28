@@ -65,7 +65,7 @@ export function TOCMinimap({ items, className }: TOCMinimapProps) {
         </HoverCardTrigger>
 
         <HoverCardContent
-          className="w-56 overflow-hidden p-0 duration-200 data-[side=left]:slide-in-from-right-3 data-[side=left]:slide-out-to-right-3 data-open:zoom-in-100 data-closed:zoom-out-100"
+          className="data-[side=left]:slide-in-from-right-3 data-[side=left]:slide-out-to-right-3 data-open:zoom-in-100 data-closed:zoom-out-100 w-56 overflow-hidden p-0 duration-200"
           align="start"
           alignOffset={0}
           side="left"

@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXT_TELEMETRY_DISABLED: '1'
+  HUSKY: '0'
+  NODE_VERSION_FILE: .node-version
+  PNPM_LOCKFILE: pnpm-lock.yaml
+
+jobs:
+  checks:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [lint, typecheck, build]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: ${{ env.NODE_VERSION_FILE }}
+          cache: pnpm
+          cache-dependency-path: ${{ env.PNPM_LOCKFILE }}
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Cache Next.js build
+        if: matrix.check == 'build'
+        uses: actions/cache@v6.1.0
+        with:
+          path: .next/cache
+          key: next-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(env.NODE_VERSION_FILE, env.PNPM_LOCKFILE) }}-${{ github.sha }}
+          restore-keys: |
+            next-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(env.NODE_VERSION_FILE, env.PNPM_LOCKFILE) }}-
+      - name: Run ${{ matrix.check }}
+        run: pnpm run "${{ matrix.check }}"
+
+  # docker:
+  #   name: Publish Docker image
+  #   if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+  #   needs: checks
+  #   permissions:
+  #     contents: read
+  #     packages: write
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 30
+  #   env:
+  #     DOCKER_REGISTRY: ${{ vars.CI_DOCKER_REGISTRY || 'ghcr.io' }}
+  #     DOCKER_IMAGE: ${{ vars.CI_DOCKER_IMAGE || github.repository }}
+  #     DOCKER_TAG: ${{ github.sha }}
+  #     DOCKER_CACHE_SCOPE: ${{ vars.CI_DOCKER_CACHE_SCOPE || github.repository }}
+  #     NODE_IMAGE_VARIANT: ${{ vars.NODE_IMAGE_VARIANT || 'bookworm-slim' }}
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v7.0.1
+  #     - name: Read Node.js version
+  #       id: node
+  #       shell: bash
+  #       run: |
+  #         node_version=$(tr -d '[:space:]' < "$NODE_VERSION_FILE")
+  #         if [[ ! "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  #           echo "Expected a stable Node.js version in $NODE_VERSION_FILE" >&2
+  #           exit 1
+  #         fi
+  #         echo "version=$node_version" >> "$GITHUB_OUTPUT"
+  #     - name: Prepare image name
+  #       id: image
+  #       shell: bash
+  #       run: |
+  #         image="$DOCKER_REGISTRY/$DOCKER_IMAGE"
+  #         echo "name=${image,,}" >> "$GITHUB_OUTPUT"
+  #     - name: Log in to registry
+  #       env:
+  #         REGISTRY_USERNAME: ${{ vars.CI_DOCKER_USERNAME || github.actor }}
+  #         REGISTRY_PASSWORD: ${{ secrets.CI_DOCKER_PASSWORD || (env.DOCKER_REGISTRY == 'ghcr.io' && github.token) || '' }}
+  #       shell: bash
+  #       run: |
+  #         if [[ -z "$REGISTRY_PASSWORD" ]]; then
+  #           echo "Configure CI_DOCKER_PASSWORD for $DOCKER_REGISTRY" >&2
+  #           exit 1
+  #         fi
+  #         printf '%s' "$REGISTRY_PASSWORD" | docker login "$DOCKER_REGISTRY" \
+  #           --username "$REGISTRY_USERNAME" --password-stdin
+  #     - name: Set up Docker Buildx
+  #       uses: docker/setup-buildx-action@v4.4.1
+  #     - name: Build and push image
+  #       uses: docker/build-push-action@v7.4.0
+  #       with:
+  #         context: .
+  #         push: true
+  #         pull: true
+  #         tags: |
+  #           ${{ steps.image.outputs.name }}:${{ env.DOCKER_TAG }}
+  #           ${{ steps.image.outputs.name }}:latest
+  #         build-args: |
+  #           NODE_VERSION=${{ steps.node.outputs.version }}
+  #           NODE_IMAGE_VARIANT=${{ env.NODE_IMAGE_VARIANT }}
+  #         cache-from: type=gha,scope=${{ env.DOCKER_CACHE_SCOPE }}
+  #         cache-to: type=gha,mode=max,scope=${{ env.DOCKER_CACHE_SCOPE }}

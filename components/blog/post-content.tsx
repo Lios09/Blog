@@ -5,7 +5,7 @@ export function PostContent({ source }: { source: string }) {
     <div
       data-slot="prose"
       className={
-        "prose max-w-none font-mono prose-paper prose-zinc dark:prose-invert"
+        "prose prose-paper prose-zinc dark:prose-invert max-w-none font-mono"
       }
     >
       <MdxContent source={source} />

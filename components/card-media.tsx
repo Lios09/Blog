@@ -1,10 +1,10 @@
 "use client";
+import type { useRender } from "@base-ui/react";
+import { BookmarkIcon, ClockIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardPanel } from "@/components/ui/card";
-import type { useRender } from "@base-ui/react";
-import { BookmarkIcon, ClockIcon } from "lucide-react";
 
 interface Article {
   slug: string;

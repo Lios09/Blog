@@ -5,10 +5,10 @@ import html from "@shikijs/langs/html";
 import js from "@shikijs/langs/js";
 import json from "@shikijs/langs/json";
 import markdown from "@shikijs/langs/mdx";
+import python from "@shikijs/langs/python";
 import sql from "@shikijs/langs/sql";
 import ts from "@shikijs/langs/ts";
 import tsx from "@shikijs/langs/tsx";
-import python from "@shikijs/langs/python";
 import darkTheme from "@shikijs/themes/one-dark-pro";
 import lightTheme from "@shikijs/themes/one-light";
 import {

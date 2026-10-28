@@ -1,7 +1,6 @@
+import type { Route } from "next";
 import Link from "next/link";
-
 import type { Post } from "@/content/types";
-import { Route } from "next";
 
 interface Props {
   posts: Post[];
@@ -14,7 +13,7 @@ export function RelatedPosts({ posts }: Props) {
 
   return (
     <section className="mt-20 border-t pt-10">
-      <h2 className="text-2xl font-bold">Related Posts</h2>
+      <h2 className="font-bold text-2xl">Related Posts</h2>
 
       <div className="mt-6 grid gap-6">
         {posts.map((post) => (

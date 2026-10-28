@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState, type ComponentProps } from "react";
-
+import { CheckIcon, CopyIcon } from "lucide-react";
+import { type ComponentProps, useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { copyToClipboard } from "@/utils/copy";
-import { CheckIcon, CopyIcon } from "lucide-react";
 
 interface CopyButtonProps extends ComponentProps<"button"> {
   content: string;
@@ -49,12 +48,12 @@ const CopyButton = ({
       {isCopied ? (
         <CheckIcon
           size={iconSize}
-          className="animate-in zoom-in-50 text-green-900 duration-200 dark:text-green-400"
+          className="zoom-in-50 animate-in text-green-900 duration-200 dark:text-green-400"
         />
       ) : (
         <CopyIcon
           size={iconSize}
-          className="animate-in zoom-in-50 duration-200"
+          className="zoom-in-50 animate-in duration-200"
         />
       )}
     </button>

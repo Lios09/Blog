@@ -26,7 +26,7 @@ A personal blog built with the Next.js App Router, with posts stored as local MD
 
 ## Local Development
 
-Use Node.js 24 to match the major version in the Dockerfile. The project specifies `pnpm@12.5.1` as its package manager.
+Use Node.js `26.12.1` (recorded in `.node-version`) to match CI. Docker CI reads this same file; local Docker builds default to the latest LTS unless `NODE_VERSION` is supplied. The project specifies `pnpm@12.15.0` as its package manager.
 
 From the project root, run:
 
@@ -47,6 +47,8 @@ Posts are read directly from local files, so no database setup is required.
 | `pnpm build` | Create a production build |
 | `pnpm start` | Start the production server after building |
 | `pnpm lint` | Check code with Biome |
+| `pnpm typecheck` | Generate Next.js route types and check TypeScript without emitting files |
+| `pnpm test` | Run the existing Node.js tests for syntax highlighting and popover positioning |
 | `pnpm format` | Format files in place with Biome |
 
 ## Writing Posts
@@ -109,9 +111,10 @@ The server listens on port `3000` by default.
 
 The repository includes a multi-stage `Dockerfile`, a `compose.yml` file, and a Caddy reverse proxy configuration. Before using them:
 
-1. Enable `output: "standalone"` in `next.config.ts`. The Dockerfile expects `.next/standalone` build output, but this option is not currently enabled.
-2. Replace `blog.example.com` in `Caddyfile` with your domain and point its DNS records to your server.
-3. Make ports `80` and `443` available to Caddy on the server.
+Standalone output is enabled in `next.config.ts` for the Docker image.
+
+1. Replace `blog.example.com` in `Caddyfile` with your domain and point its DNS records to your server.
+2. Make ports `80` and `443` available to Caddy on the server.
 
 Then run:
 
@@ -128,3 +131,39 @@ Caddy forwards requests to `blog:3000` and manages HTTPS for the configured doma
 - **Post archive copy**: Edit `app/blog/page.tsx`.
 - **Colors and global styles**: Edit `app/globals.css`.
 - **Posts and static assets**: Add files to `content/posts/` and `public/`, respectively.
+
+## Continuous Integration
+
+`.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and manual dispatch. Lint, type checking, existing Node.js tests, and the production build run in parallel with frozen pnpm installs. After all checks pass on `main` (push or manual dispatch), CI builds and pushes the Docker image to GHCR by default, tagged with the commit SHA and `latest`. Pull requests run code checks without publishing images. GHCR authentication uses the built-in `GITHUB_TOKEN`.
+
+pnpm dependencies, Next.js build artifacts, and Docker layers are cached. Superseded runs are cancelled, jobs have timeouts, and the workflow token has read-only repository access. Only the publishing job receives `packages: write` to publish to GHCR.
+
+Dependabot checks GitHub Actions, npm dependencies, and the Docker base image weekly. Update `.node-version` to change Node.js for all CI jobs, including Docker; pnpm is read from `package.json`. Action versions are pinned to the latest stable releases verified on 2026-10-28.
+
+### CI variables
+
+Set optional repository variables under **Settings → Secrets and variables → Actions → Variables**:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CI_DOCKER_REGISTRY` | `ghcr.io` | Target registry hostname |
+| `CI_DOCKER_IMAGE` | Current `owner/repository` | Image path within the registry, normalized to lowercase |
+| `CI_DOCKER_USERNAME` | Workflow actor | Registry login username |
+| `CI_DOCKER_CACHE_SCOPE` | Current `owner/repository` | Docker layer cache scope |
+| `NODE_IMAGE_VARIANT` | `bookworm-slim` | Official Node.js image variant |
+
+For Docker Hub or another registry, configure these variables and add the registry access token as the Actions secret `CI_DOCKER_PASSWORD`. For example, use `docker.io` as the registry and `username/blog-app` as the image path. GHCR uses the built-in token when this secret is unset. Existing GHCR packages must grant this repository Actions access to allow publishing.
+
+Docker CI builds and pushes the image; it does not start containers. GitHub Actions requires literal `uses:` references, so Action versions remain explicit.
+
+For a local Compose build using the CI Node.js version:
+
+```bash
+NODE_VERSION="$(cat .node-version)" docker compose build blog
+```
+
+For a direct Docker build:
+
+```bash
+docker build --build-arg NODE_VERSION="$(cat .node-version)" --tag blog-app:local .
+```

@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "biome check",
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "node --test utils/shiki/*.test.mjs",
     "format": "biome format --write",
     "prepare": "husky"
   },
@@ -76,5 +78,5 @@
     "*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc,css,scss,md}": "biome check --write",
     "*.mdx": "prettier --write"
   },
-  "packageManager": "pnpm@12.5.1"
+  "packageManager": "pnpm@12.15.0"
 }

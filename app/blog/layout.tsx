@@ -1,5 +1,5 @@
-import { ThemeSwitcher } from "@/components/theme-switcher";
 import type { Metadata } from "next";
+import { ThemeSwitcher } from "@/components/theme-switcher";
 
 export const metadata: Metadata = {
   title: "Blog",

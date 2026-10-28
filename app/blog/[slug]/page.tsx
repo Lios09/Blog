@@ -71,7 +71,7 @@ export default async function PostPage({ params }: Props) {
           <RelatedPosts posts={relatedPosts} />
         </article>
 
-        <aside className="hidden fixed top-[15%] right-0 lg:block">
+        <aside className="fixed top-[15%] right-0 hidden lg:block">
           <TableOfContents headings={post.headings} toc={post.toc} />
         </aside>
       </div>

@@ -1,7 +1,6 @@
+import type { Route } from "next";
 import Link from "next/link";
-
 import type { Post } from "@/content/types";
-import { Route } from "next";
 
 interface Props {
   post: Post;
@@ -11,7 +10,7 @@ export function PostCard({ post }: Props) {
   return (
     <article>
       <Link href={post.url as Route} className="group">
-        <h2 className="text-2xl font-semibold tracking-tight group-hover:underline">
+        <h2 className="font-semibold text-2xl tracking-tight group-hover:underline">
           {post.metadata.title}
         </h2>
       </Link>

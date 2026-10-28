@@ -13,7 +13,7 @@ export function TableOfContents({ headings, toc }: Props) {
   }
 
   return (
-    <div className="sticky items-start top-[35%]">
+    <div className="sticky top-[35%] items-start">
       <TOCMinimap items={toc} />
     </div>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "motion/react";
-import React from "react";
+import type React from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -42,6 +42,7 @@ const TextRoll: React.FC<{
                 delay,
               }}
               className="inline-block"
+              // biome-ignore lint/suspicious/noArrayIndexKey: Each animated glyph is tied to its fixed character position.
               key={i}
             >
               {l}
@@ -70,6 +71,7 @@ const TextRoll: React.FC<{
                 delay,
               }}
               className="inline-block"
+              // biome-ignore lint/suspicious/noArrayIndexKey: Each animated glyph is tied to its fixed character position.
               key={i}
             >
               {l}

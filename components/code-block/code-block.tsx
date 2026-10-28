@@ -1,8 +1,7 @@
-import type { ComponentProps } from "react";
-
-import { cn } from "@/lib/cn";
-import { FileIcon } from "@react-symbols/icons/utils";
 import { TypeScript } from "@react-symbols/icons/files";
+import { FileIcon } from "@react-symbols/icons/utils";
+import type { ComponentProps } from "react";
+import { cn } from "@/lib/cn";
 
 const CodeShikiBlock = ({
   children,
@@ -38,7 +37,7 @@ const CodeBlockHeader = ({
       className={cn(
         "not-prose", // Disable Markdown Styles
         "flex h-9 items-center justify-between px-2 py-1.5",
-        "text-sm text-neutral-600 dark:text-neutral-400",
+        "text-neutral-600 text-sm dark:text-neutral-400",
         className,
       )}
       {...props}
@@ -79,7 +78,7 @@ const CodeBlockGroup = ({
     <div
       className={cn(
         "flex items-center space-x-2",
-        "text-sm text-neutral-600 dark:text-neutral-400",
+        "text-neutral-600 text-sm dark:text-neutral-400",
         className,
       )}
       {...props}
@@ -99,7 +98,7 @@ const CodeBlockContent = ({
       className={cn(
         "max-h-96 overflow-y-auto",
         "bg-white dark:bg-neutral-900",
-        "rounded-lg font-mono text-sm leading-5 whitespace-pre",
+        "whitespace-pre rounded-lg font-mono text-sm leading-5",
         className,
       )}
       {...props}

@@ -4,8 +4,8 @@ import { Callout } from "@/components/mdx/callout";
 import { CodeBlock } from "@/components/mdx/code-block";
 import { MathLatex } from "@/components/mdx/math";
 import { Mermaid } from "@/components/mdx/mermaid";
-import { Heading } from "./components/heading";
 import { PreShikiComponent } from "./components/code-block/mdx/pre-shiki";
+import { Heading } from "./components/heading";
 
 export const mdxComponents: MDXComponents = {
   h1: (props: React.ComponentProps<"h1">) => <Heading as="h1" {...props} />,

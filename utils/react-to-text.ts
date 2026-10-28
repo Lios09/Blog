@@ -1,7 +1,7 @@
 import {
   isValidElement,
-  type ReactNode,
   type JSXElementConstructor,
+  type ReactNode,
 } from "react";
 
 type ResolverMap = Map<

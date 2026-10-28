@@ -1,17 +1,15 @@
-import type { ComponentProps } from "react";
 import type { MDXComponents } from "mdx/types";
-
-import { cn } from "@/lib/cn";
-import { reactToText } from "@/utils/react-to-text";
-
+import type { ComponentProps } from "react";
 import {
-  CodeShikiBlock,
-  CodeBlockHeader,
   CodeBlockContent,
-  CodeBlockIcon,
   CodeBlockGroup,
+  CodeBlockHeader,
+  CodeBlockIcon,
+  CodeShikiBlock,
 } from "@/components/code-block/code-block";
 import { CopyButton } from "@/components/mdx/copy-button";
+import { cn } from "@/lib/cn";
+import { reactToText } from "@/utils/react-to-text";
 
 interface PreProps extends ComponentProps<"pre"> {
   ["data-language"]: string;
@@ -38,7 +36,7 @@ const PreShikiComponent: MDXComponents = {
           {!title && (
             <CopyButton
               content={content}
-              className="sticky top-3 right-3 z-50 float-right rounded-md text-neutral-950 opacity-0 transition-opacity group-hover/code-block:opacity-100 hover:opacity-70 dark:text-neutral-50"
+              className="sticky top-3 right-3 z-50 float-right rounded-md text-neutral-950 opacity-0 transition-opacity hover:opacity-70 group-hover/code-block:opacity-100 dark:text-neutral-50"
             />
           )}
           <pre {...props}>{children}</pre>

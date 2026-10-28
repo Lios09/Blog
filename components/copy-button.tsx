@@ -1,24 +1,23 @@
-"use client"
+"use client";
 
-import type { ComponentProps } from "react"
-import { motion } from "motion/react"
-
-import { cn } from "@/lib/utils"
-import type { CopyState } from "@/hooks/use-copy-to-clipboard"
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard"
-import { Button } from "@/components/ui/button"
-import { IconSwap, IconSwapItem } from "@/components/icon-swap"
-import { CopyIcon, CheckIcon, CircleXIcon } from "lucide-react"
+import { CheckIcon, CircleXIcon, CopyIcon } from "lucide-react";
+import { motion } from "motion/react";
+import type { ComponentProps } from "react";
+import { IconSwap, IconSwapItem } from "@/components/icon-swap";
+import { Button } from "@/components/ui/button";
+import type { CopyState } from "@/hooks/use-copy-to-clipboard";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { cn } from "@/lib/utils";
 
 export type CopyStateIconProps = {
-  state: CopyState
+  state: CopyState;
   /** Custom icon for idle state. */
-  idleIcon?: React.ReactNode
+  idleIcon?: React.ReactNode;
   /** Custom icon for done state. */
-  doneIcon?: React.ReactNode
+  doneIcon?: React.ReactNode;
   /** Custom icon for error state. */
-  errorIcon?: React.ReactNode
-}
+  errorIcon?: React.ReactNode;
+};
 
 export function CopyStateIcon({
   state,
@@ -29,33 +28,25 @@ export function CopyStateIcon({
   return (
     <IconSwap>
       <IconSwapItem key={state} as={motion.span}>
-        {state === "idle" &&
-          (idleIcon ?? (
-            <CopyIcon data-slot="idle-icon" />
-          ))}
+        {state === "idle" && (idleIcon ?? <CopyIcon data-slot="idle-icon" />)}
 
-        {state === "done" &&
-          (doneIcon ?? (
-            <CheckIcon data-slot="done-icon" />
-          ))}
+        {state === "done" && (doneIcon ?? <CheckIcon data-slot="done-icon" />)}
 
         {state === "error" &&
-          (errorIcon ?? (
-            <CircleXIcon data-slot="error-icon" />
-          ))}
+          (errorIcon ?? <CircleXIcon data-slot="error-icon" />)}
       </IconSwapItem>
     </IconSwap>
-  )
+  );
 }
 
 export type CopyButtonProps = ComponentProps<typeof Button> & {
   /** The text to copy, or a function that returns the text. */
-  text: string | (() => string)
+  text: string | (() => string);
   /** Called with the copied text on successful copy. */
-  onCopySuccess?: (text: string) => void
+  onCopySuccess?: (text: string) => void;
   /** Called with the error if the copy operation fails. */
-  onCopyError?: (error: Error) => void
-} & Omit<CopyStateIconProps, "state">
+  onCopyError?: (error: Error) => void;
+} & Omit<CopyStateIconProps, "state">;
 
 export function CopyButton({
   className,
@@ -73,15 +64,15 @@ export function CopyButton({
   const { state, copy } = useCopyToClipboard({
     onCopySuccess,
     onCopyError,
-  })
+  });
 
   return (
     <Button
       className={cn("will-change-transform", className)}
       size={size}
       onClick={(e) => {
-        copy(text)
-        onClick?.(e)
+        copy(text);
+        onClick?.(e);
       }}
       aria-label="Copy"
       {...props}
@@ -94,5 +85,5 @@ export function CopyButton({
       />
       {children}
     </Button>
-  )
+  );
 }
