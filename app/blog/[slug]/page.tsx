@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
@@ -5,6 +7,7 @@ import { PostContent } from "@/components/blog/post-content";
 import { PostHeader } from "@/components/blog/post-header";
 import { RelatedPosts } from "@/components/blog/related-posts";
 import { TableOfContents } from "@/components/blog/table-of-contents";
+import { SITE_INFO } from "@/config/site";
 import { getAllPosts, getPostBySlug } from "@/content";
 
 import { getRelatedPosts } from "@/content/related";
@@ -30,9 +33,32 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     return {};
   }
 
+  const coverFile = post.metadata.cover
+    ? path.join(
+        process.cwd(),
+        "public",
+        post.metadata.cover.replace(/^\/+/, ""),
+      )
+    : null;
+  const image =
+    post.metadata.cover && coverFile && existsSync(coverFile)
+      ? { url: post.metadata.cover, alt: post.metadata.title }
+      : {
+          url: SITE_INFO.ogImage,
+          width: 1280,
+          height: 720,
+          alt: post.metadata.title,
+        };
+
   return {
     title: post.metadata.title,
     description: post.metadata.description,
+    alternates: {
+      canonical: `/blog/${slug}`,
+      types: {
+        "application/rss+xml": "/rss",
+      },
+    },
     openGraph: {
       type: "article",
       title: post.metadata.title,
@@ -40,6 +66,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       publishedTime: post.metadata.date.toISOString(),
       modifiedTime: post.metadata.updated?.toISOString(),
       tags: post.metadata.tags,
+      images: [image],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: post.metadata.title,
+      description: post.metadata.description,
+      images: [image.url],
     },
   };
 }

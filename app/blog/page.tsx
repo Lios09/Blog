@@ -1,8 +1,18 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { TextRoll } from "@/components/text-roll";
 import { Signature } from "@/components/ui/signature";
 import { getAllPosts } from "@/content";
 import { formatDate } from "@/lib/utils";
+
+export const metadata: Metadata = {
+  alternates: {
+    canonical: "/blog",
+    types: {
+      "application/rss+xml": "/rss",
+    },
+  },
+};
 
 const HomeBlog = () => {
   const posts = getAllPosts();
