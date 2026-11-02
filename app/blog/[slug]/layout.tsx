@@ -1,3 +1,5 @@
+import "katex/dist/katex.min.css";
+
 import { LineNav } from "@/components/line-nav";
 import { getAllPosts } from "@/content";
 

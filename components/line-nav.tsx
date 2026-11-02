@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "motion/react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   Tooltip,
@@ -45,12 +45,89 @@ export function LineNav({
   onItemClick,
 }: LineNavProps) {
   const activeItemRef = useRef<HTMLAnchorElement | null>(null);
+  const titleElements = useRef(new Map<string, HTMLElement>());
+  const titleObserver = useRef<ResizeObserver | null>(null);
+  const [truncatedHrefs, setTruncatedHrefs] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   useEffect(() => {
     if (scrollActiveIntoView) {
       activeItemRef.current?.scrollIntoView({ block: "center" });
     }
   }, [scrollActiveIntoView]);
+
+  useEffect(() => {
+    const observer = new ResizeObserver((entries) => {
+      setTruncatedHrefs((current) => {
+        const next = new Set(current);
+        let changed = false;
+
+        for (const entry of entries) {
+          const element = entry.target as HTMLElement;
+          const href = element.dataset.navHref;
+          if (!href) {
+            continue;
+          }
+
+          const truncated = element.scrollWidth > element.clientWidth + 1;
+          if (truncated === next.has(href)) {
+            continue;
+          }
+
+          changed = true;
+          if (truncated) {
+            next.add(href);
+          } else {
+            next.delete(href);
+          }
+        }
+
+        return changed ? next : current;
+      });
+    });
+
+    titleObserver.current = observer;
+    for (const element of titleElements.current.values()) {
+      observer.observe(element);
+    }
+
+    return () => {
+      observer.disconnect();
+      titleObserver.current = null;
+    };
+  }, []);
+
+  const observeTitle = useCallback(
+    (href: string, element: HTMLElement | null) => {
+      const current = titleElements.current.get(href);
+      if (current === element) {
+        return;
+      }
+
+      if (current) {
+        titleObserver.current?.unobserve(current);
+        titleElements.current.delete(href);
+      }
+
+      if (!element) {
+        setTruncatedHrefs((currentHrefs) => {
+          if (!currentHrefs.has(href)) {
+            return currentHrefs;
+          }
+          const next = new Set(currentHrefs);
+          next.delete(href);
+          return next;
+        });
+        return;
+      }
+
+      element.dataset.navHref = href;
+      titleElements.current.set(href, element);
+      titleObserver.current?.observe(element);
+    },
+    [],
+  );
 
   return (
     <TooltipProvider delay={200}>
@@ -72,7 +149,9 @@ export function LineNav({
               title={item.title}
               href={item.href}
               active={isActive}
+              truncated={truncatedHrefs.has(item.href)}
               isLast={index === items.length - 1}
+              observeTitle={observeTitle}
               onClick={
                 onItemClick ? (event) => onItemClick(item, event) : undefined
               }
@@ -89,35 +168,26 @@ const LineNavItem = memo(function LineNavItem({
   title,
   href,
   active = false,
+  truncated = false,
   isLast = false,
+  observeTitle,
   onClick,
 }: {
   ref?: React.Ref<HTMLAnchorElement>;
   title: string;
   href: string;
   active?: boolean;
+  truncated?: boolean;
   isLast?: boolean;
+  observeTitle: (href: string, element: HTMLElement | null) => void;
   onClick?: React.MouseEventHandler<HTMLAnchorElement>;
 }) {
-  const textRef = useRef<HTMLSpanElement>(null);
-  const [truncated, setTruncated] = useState(false);
-
-  useEffect(() => {
-    const element = textRef.current;
-    if (!element) {
-      return;
-    }
-
-    const update = () => {
-      setTruncated(element.scrollWidth > element.clientWidth + 1);
-    };
-
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(element);
-
-    return () => observer.disconnect();
-  }, []);
+  const titleRef = useCallback(
+    (element: HTMLSpanElement | null) => {
+      observeTitle(href, element);
+    },
+    [href, observeTitle],
+  );
 
   return (
     <>
@@ -145,7 +215,7 @@ const LineNavItem = memo(function LineNavItem({
                 transition={{ type: "spring", stiffness: 200, damping: 20 }}
               />
               <span
-                ref={textRef}
+                ref={titleRef}
                 className="min-w-0 truncate text-muted-foreground text-sm transition-[color] ease-out group-hover:text-foreground group-aria-[current=page]:text-foreground"
               >
                 {title}

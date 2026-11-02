@@ -1,10 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const POSTS_DIR = path.join(process.cwd(), "content/posts");
+const DEFAULT_POSTS_DIRECTORY = path.join(process.cwd(), "content/posts");
+
+let postsDirectory = DEFAULT_POSTS_DIRECTORY;
+
+export function setPostsDirectory(directory: string) {
+  postsDirectory = directory;
+}
+
+export function resetPostsDirectory() {
+  postsDirectory = DEFAULT_POSTS_DIRECTORY;
+}
 
 export function getPostSource(slug: string) {
-  const filepath = path.join(POSTS_DIR, `${slug}.mdx`);
+  const filepath = path.join(postsDirectory, `${slug}.mdx`);
 
   if (!fs.existsSync(filepath)) {
     return null;
@@ -14,7 +24,7 @@ export function getPostSource(slug: string) {
 }
 
 export async function getPostUpdatedAt(slug: string) {
-  const filePath = path.join(POSTS_DIR, `${slug}.mdx`);
+  const filePath = path.join(postsDirectory, `${slug}.mdx`);
 
   const stats = await fs.promises.stat(filePath);
 
@@ -23,7 +33,7 @@ export async function getPostUpdatedAt(slug: string) {
 
 export function getPostSlugs() {
   return fs
-    .readdirSync(POSTS_DIR)
+    .readdirSync(postsDirectory)
     .filter((file) => file.endsWith(".mdx"))
     .map((file) => file.replace(/\.mdx$/, ""));
 }

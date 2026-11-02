@@ -107,17 +107,7 @@ pnpm start
 
 The server listens on port `3000` by default.
 
-Canonical URLs, Open Graph images, and the RSS feed use the public site origin. On Vercel this is the project's `*.vercel.app` hostname, including the one assigned before you add a custom domain. Set `SITE_URL` only when that origin should be something else, such as a domain you bought or a Docker deployment. `pnpm dev` uses `http://localhost:3000` when neither value is present.
-
-```bash
-SITE_URL=https://blog.example.com pnpm build
-```
-
-Docker Compose reads `SITE_URL` for both the image build and the running container:
-
-```bash
-SITE_URL=https://blog.example.com docker compose up -d --build
-```
+Canonical URLs, Open Graph images, and the RSS feed use the Vercel hostname when the app is built on Vercel, and `http://zenix.com` otherwise. The self-hosted origin is `SELF_HOSTED_URL` in [`config/site.ts`](config/site.ts).
 
 ### Docker and Caddy
 

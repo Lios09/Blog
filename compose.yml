@@ -4,14 +4,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        SITE_URL: ${SITE_URL:?Set SITE_URL to the public site origin}
     image: nextjs-standalone-image
     # container_name: blog-app
     environment:
       NODE_ENV: production
       PORT: "3000"
-      SITE_URL: ${SITE_URL:?Set SITE_URL to the public site origin}
     ports:
       - "3000"
     restart: unless-stopped

@@ -1,57 +1,19 @@
-type SiteEnv = Record<string, string | undefined>;
+const SELF_HOSTED_URL = "http://zenix.com";
 
-const LOCAL_SITE_URL = "http://localhost:3000";
-
-export function resolveSiteUrl(env: SiteEnv = process.env): string {
-  const configured = env.SITE_URL?.trim();
-
-  if (configured) {
-    return normalizeSiteUrl(configured);
-  }
-
+function siteUrl(env: NodeJS.ProcessEnv = process.env): string {
   const vercelHost =
     env.VERCEL_PROJECT_PRODUCTION_URL?.trim() || env.VERCEL_URL?.trim();
 
   if (vercelHost) {
-    return normalizeSiteUrl(`https://${vercelHost}`);
+    return `https://${vercelHost.replace(/\/$/, "")}`;
   }
 
-  // GitHub Actions only compiles the app. Vercel injects the public host.
-  if (env.NODE_ENV === "production" && env.GITHUB_ACTIONS !== "true") {
-    throw new Error(
-      "SITE_URL is required for production builds outside Vercel. Set it to the public site origin, for example https://blog.example.com. Vercel builds use the project's vercel.app hostname automatically.",
-    );
-  }
-
-  return LOCAL_SITE_URL;
-}
-
-function normalizeSiteUrl(value: string): string {
-  let url: URL;
-
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error(
-      `SITE_URL must be an absolute http(s) URL. Received "${value}".`,
-    );
-  }
-
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(
-      `SITE_URL must be an absolute http(s) URL. Received "${value}".`,
-    );
-  }
-
-  url.search = "";
-  url.hash = "";
-
-  return url.href.replace(/\/$/, "");
+  return SELF_HOSTED_URL;
 }
 
 export const SITE_INFO = {
   name: "zenix Leo",
-  url: resolveSiteUrl(),
+  url: siteUrl(),
   ogImage: "/og-image.jpg",
   description:
     "A blog about my thoughts, notes, and things I learn along the way.",

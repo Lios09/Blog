@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { resolveActiveHeadingIds } from "@/components/toc-active";
 import {
   HoverCard,
   HoverCardContent,
@@ -115,26 +116,30 @@ export function useActiveHeading(itemIds: string[]) {
       return;
     }
 
-    const observedIds = new Set(elements.map((element) => element.id));
+    const visibleIds = new Set<string>();
 
-    // Every heading inside the viewport is active at the same time. The first
-    // callback already includes headings that are off screen, so drop them
-    // immediately instead of keeping the initial fallback.
+    // Headings inside the viewport stay active together. A long section can
+    // leave none of them on screen; the last heading above the viewport then
+    // stays current until the next one arrives.
     const observer = new IntersectionObserver(
       (entries) => {
-        setActiveIds((currentIds) => {
-          const nextIds = new Set(
-            [...currentIds].filter((id) => observedIds.has(id)),
-          );
-
-          for (const entry of entries) {
-            if (entry.isIntersecting) {
-              nextIds.add(entry.target.id);
-            } else {
-              nextIds.delete(entry.target.id);
-            }
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            visibleIds.add(entry.target.id);
+          } else {
+            visibleIds.delete(entry.target.id);
           }
+        }
 
+        const tops = new Map(
+          elements.map((element) => [
+            element.id,
+            element.getBoundingClientRect().top,
+          ]),
+        );
+        const nextIds = resolveActiveHeadingIds(itemIds, visibleIds, tops);
+
+        setActiveIds((currentIds) => {
           if (
             nextIds.size === currentIds.size &&
             [...nextIds].every((id) => currentIds.has(id))
