@@ -1,39 +1,46 @@
+import GithubSlugger from "github-slugger";
+import type { Heading as MdastHeading, Root } from "mdast";
 import { toString as mdastToString } from "mdast-util-to-string";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
+import { visit } from "unist-util-visit";
+import type { Heading, TOCItemType } from "./types";
 
-import { createHeadingSlug } from "./slug";
-
-import type { Heading } from "./types";
-
-export function extractHeadings(content: string): Heading[] {
-  const tree = unified().use(remarkParse).parse(content);
-
+export function extractOutline(content: string): {
+  toc: TOCItemType[];
+  headings: Heading[];
+} {
+  const tree = unified().use(remarkParse).parse(content) as Root;
+  const slugger = new GithubSlugger();
+  const toc: TOCItemType[] = [];
   const headings: Heading[] = [];
 
-  const slugCounts = new Map<string, number>();
+  visit(tree, "heading", (node: MdastHeading) => {
+    const title = mdastToString(node);
+    const id = slugger.slug(title);
 
-  for (const node of tree.children) {
-    if (node.type !== "heading" || (node.depth !== 2 && node.depth !== 3)) {
-      continue;
-    }
-
-    const text = mdastToString(node);
-
-    const baseSlug = createHeadingSlug(text);
-
-    const count = slugCounts.get(baseSlug) ?? 0;
-
-    slugCounts.set(baseSlug, count + 1);
-
-    const id = count === 0 ? baseSlug : `${baseSlug}-${count}`;
-
-    headings.push({
-      id,
-      text,
-      level: node.depth,
+    toc.push({
+      title,
+      url: `#${id}`,
+      depth: node.depth,
     });
-  }
 
-  return headings;
+    if (node.depth === 2 || node.depth === 3) {
+      headings.push({
+        id,
+        text: title,
+        level: node.depth,
+      });
+    }
+  });
+
+  return { toc, headings };
+}
+
+export function extractTOC(content: string): TOCItemType[] {
+  return extractOutline(content).toc;
+}
+
+export function extractHeadings(content: string): Heading[] {
+  return extractOutline(content).headings;
 }

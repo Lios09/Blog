@@ -11,7 +11,7 @@ const CodeShikiBlock = ({
   return (
     <div
       className={cn(
-        "not-prose",
+        "not-prose my-6",
         "flex w-full flex-col overflow-clip rounded-lg shadow-xs",
         "bg-neutral-200/40 dark:bg-neutral-800/70",
         "border border-neutral-200 dark:border-neutral-800",

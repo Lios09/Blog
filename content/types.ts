@@ -1,5 +1,10 @@
-import type { TOCItemType } from "./extractTOC";
 import type { PostFrontmatter } from "./schema";
+
+export interface TOCItemType {
+  title: string;
+  url: string;
+  depth: number;
+}
 
 export interface Heading {
   id: string;

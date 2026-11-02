@@ -1,8 +1,6 @@
 import { parseCodeMeta } from "@/lib/mdx/code";
-import type { Languages } from "@/utils/shiki/highlight";
-import { highlight, Themes } from "@/utils/shiki/highlight";
+import { highlight, highlightCode, Themes } from "@/utils/shiki/highlight";
 import { highlightTwoslash, isTwoslashCode } from "@/utils/shiki/twoslash";
-import { CodeblockShiki } from "../code-block/client/shiki";
 import { TwoslashCode } from "../code-block/client/twoslash";
 import {
   CodeBlockContent,
@@ -23,41 +21,12 @@ export async function CodeBlock({ code, meta }: Props) {
 
   const { language, title } = parseCodeMeta(meta);
   const usesTwoslash = isTwoslashCode(language, meta);
-  const twoslashHtml = usesTwoslash
+  const highlightedHtml = usesTwoslash
     ? highlightTwoslash(await highlight(), code, language, {
         light: Themes.light,
         dark: Themes.dark,
       })
-    : null;
-
-  // const highlighter = await getHighlighter();
-
-  // const html = highlighter.codeToHtml(code, {
-  //   lang: language,
-  //   themes: {
-  //     light: "github-light",
-  //     dark: "github-dark",
-  //   },
-  //   transformers: [
-  //     {
-  //       name: "line-numbers",
-  //       line(node, line) {
-  //         node.properties["data-line"] = line;
-  //       },
-  //       pre(node) {
-  //         node.properties["data-code"] = "true";
-  //       },
-  //     },
-  //     {
-  //       name: "highlight-lines",
-  //       line(node, line) {
-  //         if (highlightLines.includes(line)) {
-  //           node.properties["data-highlighted"] = "true";
-  //         }
-  //       },
-  //     },
-  //   ],
-  // });
+    : await highlightCode(code, language, { lineNumbers: true });
 
   return (
     <CodeShikiBlock>
@@ -71,13 +40,13 @@ export async function CodeBlock({ code, meta }: Props) {
       <CodeBlockContent
         className={usesTwoslash ? "max-h-none overflow-y-visible" : undefined}
       >
-        {twoslashHtml ? (
-          <TwoslashCode html={twoslashHtml} />
+        {usesTwoslash ? (
+          <TwoslashCode html={highlightedHtml} />
         ) : (
-          <CodeblockShiki
-            lineNumbers
-            language={language as Languages}
-            code={code}
+          <div
+            className="w-full overflow-x-auto"
+            // biome-ignore lint/security/noDangerouslySetInnerHtml: Shiki generates this HTML from trusted local MDX code.
+            dangerouslySetInnerHTML={{ __html: highlightedHtml }}
           />
         )}
       </CodeBlockContent>

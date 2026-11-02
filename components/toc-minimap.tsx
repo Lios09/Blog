@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   HoverCard,
   HoverCardContent,
@@ -101,30 +101,45 @@ export function TOCMinimap({ items, className }: TOCMinimapProps) {
 }
 
 export function useActiveHeading(itemIds: string[]) {
-  // The first heading is the current section on the initial page view. It may
-  // be below the observer's top 20% band until the user starts scrolling.
+  // Shown until the observer reports what is actually on screen.
   const [activeIds, setActiveIds] = useState<Set<string>>(
     () => new Set(itemIds[0] ? [itemIds[0]] : []),
   );
-  const hasObserverFired = useRef(false);
 
   useEffect(() => {
+    const elements = itemIds
+      .map((id) => document.getElementById(id))
+      .filter((element): element is HTMLElement => element !== null);
+
+    if (elements.length === 0) {
+      return;
+    }
+
+    const observedIds = new Set(elements.map((element) => element.id));
+
+    // Every heading inside the viewport is active at the same time. The first
+    // callback already includes headings that are off screen, so drop them
+    // immediately instead of keeping the initial fallback.
     const observer = new IntersectionObserver(
       (entries) => {
-        const isInitialCallback = !hasObserverFired.current;
-        hasObserverFired.current = true;
-
         setActiveIds((currentIds) => {
-          const nextIds = new Set(currentIds);
+          const nextIds = new Set(
+            [...currentIds].filter((id) => observedIds.has(id)),
+          );
 
           for (const entry of entries) {
-            // Keep the initial fallback when no heading is in the observation
-            // band yet, but remove headings as they leave it afterwards.
             if (entry.isIntersecting) {
               nextIds.add(entry.target.id);
-            } else if (!isInitialCallback) {
+            } else {
               nextIds.delete(entry.target.id);
             }
+          }
+
+          if (
+            nextIds.size === currentIds.size &&
+            [...nextIds].every((id) => currentIds.has(id))
+          ) {
+            return currentIds;
           }
 
           return nextIds;
@@ -133,20 +148,12 @@ export function useActiveHeading(itemIds: string[]) {
       { rootMargin: "0px", threshold: 0 },
     );
 
-    for (const id of itemIds ?? []) {
-      const element = document.getElementById(id);
-      if (element) {
-        observer.observe(element);
-      }
+    for (const element of elements) {
+      observer.observe(element);
     }
 
     return () => {
-      for (const id of itemIds ?? []) {
-        const element = document.getElementById(id);
-        if (element) {
-          observer.unobserve(element);
-        }
-      }
+      observer.disconnect();
     };
   }, [itemIds]);
 

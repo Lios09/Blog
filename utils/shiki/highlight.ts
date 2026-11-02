@@ -53,4 +53,56 @@ const highlight = async (): Promise<HighlighterCore> => {
   return highlighter;
 };
 
-export { highlight, Themes, type Languages };
+const highlightCode = async (
+  code: string,
+  language: string,
+  options: { lineNumbers?: boolean } = {},
+): Promise<string> => {
+  if (!code) {
+    return "<pre><code></code></pre>";
+  }
+
+  const highlighter = await highlight();
+  const lang = resolveHighlightLanguage(
+    language,
+    highlighter.getLoadedLanguages(),
+  );
+
+  return highlighter.codeToHtml(code, {
+    lang,
+    themes: {
+      light: Themes.light,
+      dark: Themes.dark,
+    },
+    transformers: options.lineNumbers
+      ? [
+          {
+            name: "AddLineNumbers",
+            pre(node) {
+              const classNames = node.properties.class;
+              node.properties.class = Array.isArray(classNames)
+                ? [...classNames, "shiki-line-numbers"]
+                : `${classNames ?? ""} shiki-line-numbers`.trim();
+            },
+          },
+        ]
+      : [],
+  });
+};
+
+const resolveHighlightLanguage = (
+  language: string,
+  loaded: readonly string[],
+) => {
+  if (language === "text" || language === "plaintext") {
+    return "plaintext";
+  }
+
+  if (loaded.includes(language)) {
+    return language;
+  }
+
+  return "plaintext";
+};
+
+export { highlight, highlightCode, Themes, type Languages };

@@ -87,11 +87,11 @@ Post frontmatter is validated with Zod. See [`content/schema.ts`](content/schema
 | `author` | No | Author name; defaults to `Your Name`, so setting it explicitly is recommended |
 | `tags` | No | An array of tags; defaults to an empty array |
 | `category` | No | Post category |
-| `published` | No | Whether to include the post in the archive; defaults to `true` |
+| `published` | No | Whether the post is public; defaults to `true` |
 | `featured` | No | Featured flag; defaults to `false` |
 | `cover` | No | Cover image path |
 
-Setting `published: false` excludes a post from the archive and the list of routes generated ahead of time. The article page still reads files by slug, so this field does not control access to a post.
+Setting `published: false` hides a post from the archive, from routes generated ahead of time, and from direct visits to `/blog/<slug>`.
 
 Place static images in `public/` and reference them with paths starting with `/`. Custom MDX components are registered in [`mdx-components.tsx`](mdx-components.tsx).
 
@@ -106,6 +106,18 @@ pnpm start
 ```
 
 The server listens on port `3000` by default.
+
+Canonical URLs, Open Graph images, and the RSS feed use the public site origin. On Vercel this is the project's `*.vercel.app` hostname, including the one assigned before you add a custom domain. Set `SITE_URL` only when that origin should be something else, such as a domain you bought or a Docker deployment. `pnpm dev` uses `http://localhost:3000` when neither value is present.
+
+```bash
+SITE_URL=https://blog.example.com pnpm build
+```
+
+Docker Compose reads `SITE_URL` for both the image build and the running container:
+
+```bash
+SITE_URL=https://blog.example.com docker compose up -d --build
+```
 
 ### Docker and Caddy
 

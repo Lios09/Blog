@@ -11,9 +11,13 @@ export function getPostBySlug(slug: string): Post | null {
     return null;
   }
 
-  const parsed = parsePost(slug, source);
+  const post = transformPost(parsePost(slug, source));
 
-  return transformPost(parsed);
+  if (!post.metadata.published) {
+    return null;
+  }
+
+  return post;
 }
 
 export function getAllPosts() {

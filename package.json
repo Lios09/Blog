@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "biome check",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "node --test utils/shiki/*.test.mjs",
+    "test": "node --import ./scripts/register-test-hooks.mjs --test content/*.test.mjs config/*.test.mjs lib/mdx/*.test.mjs utils/shiki/*.test.mjs",
     "format": "biome format --write",
     "prepare": "husky"
   },
@@ -29,6 +29,7 @@
     "clsx": "^2.1.1",
     "cn": "^0.2.6",
     "geist": "^1.7.2",
+    "github-slugger": "2.0.0",
     "gray-matter": "^4.0.3",
     "katex": "^0.18.7",
     "lucide-react": "^1.42.0",

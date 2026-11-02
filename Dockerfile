@@ -45,6 +45,8 @@ COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 
 ENV NODE_ENV=production
+ARG SITE_URL
+ENV SITE_URL=$SITE_URL
 
 # Next.js collects completely anonymous telemetry data about general usage.
 # Learn more here: https://nextjs.org/telemetry
@@ -78,6 +80,8 @@ WORKDIR /app
 
 # Set production environment variables
 ENV NODE_ENV=production
+ARG SITE_URL
+ENV SITE_URL=$SITE_URL
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
