@@ -105,7 +105,7 @@ export default async function PostPage({ params }: Props) {
         </article>
 
         <aside className="fixed top-[15%] right-0 hidden lg:block">
-          <TableOfContents headings={post.headings} toc={post.toc} />
+          <TableOfContents toc={post.toc} />
         </aside>
       </div>
     </main>

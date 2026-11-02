@@ -1,14 +1,12 @@
-import type { Heading } from "@/content/types";
 import type { TOCItemType } from "../toc-minimap";
 import { TOCMinimap } from "../toc-minimap";
 
 interface Props {
-  headings: Heading[];
   toc: TOCItemType[];
 }
 
-export function TableOfContents({ headings, toc }: Props) {
-  if (!headings.length) {
+export function TableOfContents({ toc }: Props) {
+  if (!toc.length) {
     return null;
   }
 

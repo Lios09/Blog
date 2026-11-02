@@ -4,6 +4,7 @@
 @import "tailwind-animations";
 @import "@shikijs/twoslash/style-rich.css";
 @import "../styles/shiki.css";
+@import "katex/dist/katex.min.css";
 
 @plugin "@tailwindcss/typography";
 

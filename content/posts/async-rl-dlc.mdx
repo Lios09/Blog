@@ -1,0 +1,322 @@
+---
+title: "异步 RL 为什么会崩：拆开训练与推理不一致，看懂 DLC 修正"
+description: "LLM 强化学习里，采样用 vLLM、算梯度用训练框架，两边的概率天然对不上；异步采样又让权重版本落后。论文 arXiv:2610.40945 把这份误差精确拆成“数值差异”和“策略滞后”两部分，说明为什么一个修正在量化场景好用、在异步场景却会崩，并给出 DLC：居中数值差异、裁剪滞后比值、ESS 低于 1/2 时重同步采样器。本文逐步推导，并给出一份 PyTorch 风格的 loss 实现草稿。"
+date: "2026-11-02"
+author: "Lios09"
+tags:
+  - reinforcement-learning
+  - llm
+  - grpo
+  - vllm
+  - verl
+category: "Machine Learning"
+published: true
+featured: false
+---
+
+做过 GRPO / PPO 训练 LLM 的人，大多踩过这样的坑：
+
+- 同步训练好好的，一开异步 rollout，跑几十步 reward 曲线突然塌掉；
+- 加了 truncated importance sampling，FP8 采样器稳了，换成"陈旧权重"采样器又不稳；
+- 监控看着 KL 很小，模型却已经偏了。
+
+10 月 29 日挂上 arXiv 的论文 **On the Origin and Evolution of Training-Inference Mismatch in LLM Reinforcement Learning**（[arXiv:2610.40945](https://arxiv.org/abs/2610.40945)，代码 [Skylanding/Training-Inference-Mismatch](https://github.com/Skylanding/Training-Inference-Mismatch)）给了一个很干净的解释：
+
+**"训练与推理不一致"其实是两种性质完全不同的误差，一种是常数，一种会自我放大。用同一种修正去对付两者，必然顾此失彼。**
+
+下面一步步拆。
+
+---
+
+## 1. 问题从哪来
+
+一个典型的 LLM RL 系统跑着两套东西：
+
+```text
+           同一份权重？
+Sampler (vLLM, q)  ──responses──▶  Trainer (FSDP/Megatron, p_θ)
+      ▲                                    │
+      └──────── weight sync ◀──────────────┘
+```
+
+On-policy 的前提是"样本来自当前策略"，但实际上：
+
+1. **引擎数值**：vLLM 的 kernel、精度（BF16/FP8、FP8 KV cache）和训练框架不同，**就算权重完全一样**，算出来的 token 概率 $q$ 也不等于 $p$。
+2. **权重版本**：异步系统（AReaL、PipelineRL 这类）里，采样器拿着上次同步的旧权重 $\theta_{old}$，训练器已经往前走了好几步。
+
+论文把两者统称 training-inference mismatch。
+
+另外三类不一致（top-p 后报告的概率不是真正采样分布、retokenize 导致 token 序列变化、按 reward 过滤或 partial rollout 让 batch 组成依赖结果）属于**基础设施层**，可以靠工程手段直接消掉：
+
+| 问题                     | 工程修复                          |
+| ------------------------ | --------------------------------- |
+| top-p / 处理过的 logprob | 采样器报告**真正抽样用的分布**    |
+| retokenization           | 直接把 **token ids** 传给 trainer |
+| 过滤、partial rollout    | batch 组成与结果无关              |
+
+这些搞定之后，真正需要算法来处理的只剩两项：**数值差异**和**权重滞后**。
+
+---
+
+## 2. 先看一个容易忽略的项：drift
+
+记采样 token 的 score 为 $s = \nabla_\theta \log p_\theta(v)$，某个前缀上的期望优势为 $a$。在采样分布 $q$ 下，策略梯度可以拆成：
+
+$$
+\mathbb{E}_q[a\,s] = \mathbb{E}_q[a]\,\mathbb{E}_q[s] + \mathrm{Cov}_q(a, s)
+$$
+
+on-policy 时 $\mathbb{E}_p[s]=0$（概率和为 1 的梯度是 0），所以第一项为零。但 $q \neq p$ 时：
+
+$$
+\mathbb{E}_q[s] = \mathbb{E}_q[s] - \mathbb{E}_p[s] = -\nabla_\theta \mathrm{KL}(q \,\|\, p_\theta)
+$$
+
+第一项 $\bar a\,\bar s$ 就是 **drift**：它和 advantage 的具体分布无关，只和均值有关，本质上是一次"把 trainer 往 sampler 蒸馏"的 KL 梯度步，步长是 $\bar a$。
+
+你可能会想：GRPO 已经把每个 prompt 的 advantage 做了组内居中，均值不是 0 吗？
+
+**prompt 级别是 0，前缀级别不是。** 走向正确答案的前缀期望优势为正，出错之后的前缀为负，而这些前缀恰恰是承载学习信号的地方。所以 drift 在真正重要的位置上不为零。
+
+两种经典修正都能在单个前缀上消掉 drift：
+
+- **Importance sampling**：乘 $\min(p/q, 2)$。不截断时能完全抵消 drift，但截断罕见 token 会把一部分 drift 带回来。
+- **Score centering**：用 $s_t - \bar s_t$ 代替 $s_t$，更新只剩协方差项。
+
+问题在于：**两者消掉 drift 之后剩下的东西不同**，而剩下的东西如何演化，取决于误差的来源。
+
+---
+
+## 3. 核心：把误差精确拆成两半
+
+定义采样 token 的误差：
+
+$$
+\delta_t = \log p_\theta(y_t\mid h_t) - \log q(y_t\mid h_t)
+$$
+
+关键技巧是：**让 trainer 在采样器的旧权重 $\theta_{old}$ 上，用自己的数值实现，再做一次 forward。** 这样每次只改变一个属性，误差可以精确拆开：
+
+$$
+\delta_t =
+\underbrace{\log p_\theta(y_t\mid h_t) - \log p_{\theta_{old}}(y_t\mid h_t)}_{\ell_t\ \text{策略滞后}}
++
+\underbrace{\log p_{\theta_{old}}(y_t\mid h_t) - \log q(y_t\mid h_t)}_{e_t\ \text{数值差异}}
+$$
+
+```text
+q (vLLM @ θ_old)
+   │  e_t ：同权重、不同引擎 → 数值差异
+   ▼
+p_θold (trainer @ θ_old)
+   │  ℓ_t ：同引擎、不同权重 → 策略滞后
+   ▼
+p_θ (trainer @ θ)
+```
+
+这两项的行为完全不同：
+
+|              | 数值差异 $e_t$     | 策略滞后 $\ell_t$          |
+| ------------ | ------------------ | -------------------------- |
+| 来源         | 引擎 kernel / 精度 | 训练器自己的更新           |
+| 训练中       | **基本恒定**       | **随累计更新增长**         |
+| 对梯度的偏差 | 近似固定的偏移     | 进入下一次更新，形成反馈环 |
+| 合适的修正   | 居中（centering）  | 比值加权 + 重同步          |
+
+---
+
+## 4. 为什么策略滞后会自我放大
+
+策略滞后由训练器自己的更新产生。论文的分析是：居中消掉 drift 后，剩余偏差里的 token 项和 prefix 项**会进入下一次更新**，下一次更新又决定了下一步的 lag：
+
+```text
+更新 Δ ──▶ lag ℓ 变大 ──▶ 残余偏差变大 ──▶ 下一次更新更偏 ──┐
+   ▲                                                        │
+   └────────────────────────────────────────────────────────┘
+```
+
+推论之一：score centering 相对 importance sampling 多出来的更新范数里，有一个关于 $\eta k$（学习率 × 步数）的**正的二次项**。这和已知的"异步 GRPO 崩溃程度随 staleness × learning rate 增长"对得上。
+
+Ratio 加权可以切断这个环，但**只在 lag ratio 集中的时候有效**。论文用 ratio 的有效样本量（ESS）给出了有效范围的边界：
+
+$$
+\mathrm{ESS} = \frac{1}{\mathbb{E}_q[\rho_t^2]},\qquad \rho_t = e^{\ell_t} = \frac{p_\theta}{p_{\theta_{old}}}
+$$
+
+**当 ESS 跌破 1/2 时，importance sampling 就失效了。** 在 Qwen3-1.7B 上，ratio 的重尾让这个时刻出现在第 11 步，比高斯近似的预测早 3 步，importance sampling 也正是在这一步离开噪声底。
+
+---
+
+## 5. 实验能复现"同一修正，换个源就崩"
+
+设置（论文 §3.2）：
+
+- 模型：Qwen3-0.6B / 1.7B，non-thinking 模式
+- 任务：Countdown，reward ±1
+- 每步 64 prompts × 8 samples，SGD，lr = 1e-2，40 步，每个配置跑 3 次
+- 采样器：
+  - 参考：vLLM BF16 + CUDA graphs（on-policy）
+  - 量化：FP8 权重（128×128 block）+ 动态激活量化 + FP8 KV cache
+  - 陈旧：BF16，每 64 步同步一次，所以 40 步内一直用初始权重 $\theta_0$
+- 温度 1、不截断，直接传 token ids
+- 偏差指标：与 on-policy 训练的全词表 KL ÷ 噪声底（两次独立 on-policy 训练之间的 KL）
+
+Qwen3-0.6B，第 40 步（Table 2）：
+
+| 修正                | 量化：偏差 | 量化：准确率 | 陈旧：偏差 | 陈旧：准确率 |
+| ------------------- | ---------- | ------------ | ---------- | ------------ |
+| On-policy           | 1.00       | 46.5%        | 1.00       | 46.5%        |
+| Policy gradient     | 12.7       | 26.4%        | 345        | 0.2%         |
+| PPO（batch 参考）   | 14.3       | 26.2%        | 699        | 0.0%         |
+| Importance sampling | 0.74       | 43.2%        | 4.50       | 20.9%        |
+| Score centering     | 0.80       | **46.5%**    | 31.7       | 12.2%        |
+| IS + centering      | 1.11       | 46.0%        | 2.10       | **32.0%**    |
+| **DLC**             | –          | –            | **1.93**   | 31.7%        |
+
+看 score centering 这一行：量化下和 on-policy 打平，陈旧下偏差 31.7 倍、准确率只剩 12.2%。数值差异是常数，居中就够；策略滞后会放大，居中压不住。
+
+---
+
+## 6. DLC：一种误差配一种修正
+
+Discrepancy-Lag Correction 的思路是**按层分配**：
+
+1. **策略滞后**在环内 → 用 lag ratio $\rho_t = p_\theta/p_{\theta_{old}}$ 加权（PPO clip，参考策略是**采样器的权重**，不是 batch 开始时的 trainer）；
+2. **数值差异**是常数 → 减去采样器下加权 score 的期望（居中）；
+3. 算法够不到的那部分 lag → 交还给基础设施：**ESS &lt; 1/2 时把 trainer 权重拷给 sampler**。
+
+更新式（论文 Eq.6）：
+
+$$
+\hat g_{\mathrm{DLC}} = \sum_t A_t\left(m_t\,\rho_t\,s_t - C_t\right),\qquad
+C_t = \sum_{v\in H}\left(q_v\,m_v\,\rho_v - \kappa\,p_\theta(v)\right)s_v
+$$
+
+- $m_t$：clip 指示。正 advantage 时 $\rho_t > 1+\varepsilon$ 丢掉；负 advantage 时 $\rho_t$ 离开 $[1-\varepsilon, c]$ 丢掉，$\varepsilon=0.2$，dual-clip $c=3$（verl 默认）
+- $H$：采样器报告 logprob 的 top-128 token
+- $\kappa = \dfrac{1-\sum_{H} q_v}{1-\sum_{H} p_{\theta_{old}}(v)}$：尾部质量比，尾部用 $\kappa\,p_{\theta_{old}}$ 近似 $q$
+
+它在两个极限下退化成已知方法，这也是一个很好的正确性检查：
+
+- $\theta=\theta_{old}$：$\rho=1$，clip 不触发，$C_t$ 就是 score centering 减去的均值 → **退化为 score centering**
+- $q=p_{\theta_{old}}$：$\kappa=1$，$C_t=0$ → **退化为以采样器权重为参考的 PPO**
+
+代价：每步多一次 trainer 在 $\theta_{old}$ 上的 forward，外加存 top-128 logprob。超参只有 3 个：clip 0.2、head 128、重同步阈值 1/2。
+
+---
+
+## 7. 训练循环（Algorithm 1）
+
+```text
+输入: trainer 权重 θ, sampler 权重 θ_old, 组内 advantage A
+
+1. sampler@θ_old 采样，记录每个采样 token 的 log q，以及 top-128 token 的 log q
+2. trainer 在 θ_old 上 forward，得到相同 token 的 log p_θold
+3. 按 Eq.2 拆出 ℓ_t 和 e_t
+4. 计算 lag ratio ρ_t = exp(ℓ_t) 的 ESS = 1 / E_q[ρ_t²]
+5. 对 Σ_t A_t (m_t ρ_t s_t − C_t) 做一步 SGD
+6. if ESS < 0.5:
+       把 θ 拷给 sampler，θ_old ← θ
+```
+
+注意第 6 步不是固定间隔。在 Qwen3-1.7B 上，3 次 DLC 运行在 40 步内各只重同步了一次（分别在第 20、35、36 步）。论文估算，如果用固定间隔，importance sampling 得每 11 步同步一次才能留在有效范围内。
+
+---
+
+## 8. Loss 怎么写
+
+论文附录 L 给出了一次 backward 就能得到 $\hat g_{\mathrm{DLC}}$ 的 loss：在 verl 的 PPO loss（参考取 $\theta_{old}$）上加一个带 stop-gradient 的居中项：
+
+$$
+L_{\mathrm{DLC}} = L_{\mathrm{PPO}} + \sum_t A_t \sum_{v\in H} \mathrm{sg}\!\left(q_v\,m_v\,\rho_v - \kappa\,p_\theta(v)\right)\log p_\theta(v\mid h_t)
+$$
+
+下面是我按 Eq.6 和 Eq.43 写的 PyTorch 草稿，**不是论文官方代码**，只是为了把公式落到张量上看清楚每一项。真正训练请以 [官方仓库](https://github.com/Skylanding/Training-Inference-Mismatch) 为准。
+
+```python
+import torch
+
+def dlc_loss(
+    logp_new_tok,    # [N]     log p_θ(y_t)，带梯度
+    logp_old_tok,    # [N]     log p_θold(y_t)，trainer 在旧权重上的 forward，无梯度
+    adv,             # [N]     A_t
+    logp_new_head,   # [N, K]  log p_θ(v)，v ∈ H（top-K），带梯度
+    logp_old_head,   # [N, K]  log p_θold(v)，无梯度
+    logq_head,       # [N, K]  采样器报告的 log q(v)，无梯度
+    eps: float = 0.2,
+    dual_c: float = 3.0,
+):
+    # 策略滞后与 lag ratio，按 verl 的做法 clamp 到 [e^-20, e^20]
+    lag = (logp_new_tok - logp_old_tok).clamp(-20, 20)
+    rho = lag.exp()
+
+    # PPO 部分（参考策略 = 采样器权重 θ_old）
+    def clip_mask(r, a):
+        pos = (a >= 0) & (r <= 1 + eps)
+        neg = (a < 0) & (r >= 1 - eps) & (r <= dual_c)
+        return (pos | neg).float()
+
+    m_tok = clip_mask(rho.detach(), adv)
+    # 梯度 = -m ρ A ∇log p_θ，因为 ∇ρ = ρ ∇log p_θ
+    loss_ppo = -(m_tok * rho * adv)
+
+    # 居中项 C_t
+    with torch.no_grad():
+        q_head = logq_head.exp()
+        p_old_head = logp_old_head.exp()
+        kappa = (1 - q_head.sum(-1)) / (1 - p_old_head.sum(-1)).clamp_min(1e-8)  # [N]
+
+        rho_head = (logp_new_head - logp_old_head).clamp(-20, 20).exp()          # [N, K]
+        a_b = adv.unsqueeze(-1).expand_as(rho_head)
+        m_head = clip_mask(rho_head, a_b)                                         # 跟随 A_t 的符号
+        p_new_head = logp_new_head.exp()
+        coef = q_head * m_head * rho_head - kappa.unsqueeze(-1) * p_new_head      # sg(...)
+
+    loss_center = adv * (coef * logp_new_head).sum(-1)
+
+    return (loss_ppo + loss_center).mean()
+
+
+@torch.no_grad()
+def lag_ess(logp_new_tok, logp_old_tok):
+    rho = (logp_new_tok - logp_old_tok).clamp(-20, 20).exp()
+    return 1.0 / (rho.pow(2).mean())   # < 0.5 时触发重同步
+```
+
+几个实现上的细节：
+
+- **$\rho$ 的分母是 $p_{\theta_{old}}$，不是 $q$。** 这是 DLC 和 truncated IS / VCPO 的本质区别：分母用 $q$，数值差异也会被一起加权和截断；分母用 $p_{\theta_{old}}$，只有 lag 进入权重。
+- `m_head` 必须跟随**当前 token 的 advantage 符号**来选 clip 区间，论文附录 L 对此有说明。
+- 所有项按 batch 内 token 取平均，和 PPO loss 的归一化方式保持一致。
+- `logp_old_*` 必须来自 **trainer 的数值实现**，不能直接用 vLLM 返回的 logprob，否则 $e_t$ 和 $\ell_t$ 又混在一起了。
+
+---
+
+## 9. 结果
+
+Qwen3-0.6B，陈旧采样器：
+
+- DLC 第 40 步偏差 1.93 倍噪声底，准确率 31.7%
+- IS + centering 是 2.10 倍、32.0%，两者基本打平
+- 量化 + 陈旧同时存在时：DLC 2.17、IS + centering 2.61
+
+Qwen3-1.7B 上差距更明显：DLC 到第 40 步都保持在噪声底的 1.2 倍以内；importance sampling 加上同样阈值的重同步后，偏差从 115 倍降到 2.6 倍。论文还指出，重同步能防住单纯 clip 防不住的崩溃，而**在采样器前缀上测的 KL 看不出这些崩溃**。这一点对日常监控很重要。
+
+---
+
+## 10. 对工程实践的启发
+
+1. **先把基础设施层的不一致清干净**：传 token ids、报告真实采样分布、batch 组成与结果无关。这些不该交给算法去补。
+2. **多跑一次 trainer@θ_old 的 forward 很值。** 有了它才能把 $e_t$ 和 $\ell_t$ 分开监控：$|e_t|$ 应该基本平稳，$\|\ell_t\|$ 随更新增长。如果 $|e_t|$ 也在漂，先查引擎配置。
+3. **用 lag ratio 的 ESS 驱动权重同步**，不用固定间隔。ESS 是一个便宜、可解释的触发器。
+4. **PPO 的参考策略选哪个很关键。** 参考取"batch 前的 trainer"时，比值里既没有数值差异也没有 lag，陈旧场景下偏差到了 699 倍；取采样器权重，才能真正对 lag 加权。
+5. **不要只看 sampler 前缀上的 KL。** 论文明确指出它会漏掉 per-token 修正留下的崩溃。
+
+局限也要说清楚：实验是 40 步的短训练，模型最大 1.7B，任务是 Countdown；更长训练、更大模型、MoE（router replay 带来的额外不一致）下表现如何，还需要更多验证。
+
+---
+
+## 参考
+
+- [On the Origin and Evolution of Training-Inference Mismatch in LLM Reinforcement Learning（arXiv:2610.40945）](https://arxiv.org/abs/2610.40945)
+- [官方代码：Skylanding/Training-Inference-Mismatch](https://github.com/Skylanding/Training-Inference-Mismatch)

@@ -1,8 +1,14 @@
 "use client";
 
 import { motion } from "motion/react";
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 const lineVariants = {
@@ -47,32 +53,34 @@ export function LineNav({
   }, [scrollActiveIntoView]);
 
   return (
-    <nav
-      className={cn("flex flex-col gap-2 py-5.25", className)}
-      style={
-        {
-          "--line-nav-width": `${lineVariants.normal.width}px`,
-        } as React.CSSProperties
-      }
-    >
-      {items.map((item, index) => {
-        const isActive = item.href === activeHref;
+    <TooltipProvider delay={200}>
+      <nav
+        className={cn("flex w-full min-w-0 flex-col gap-2 py-5.25", className)}
+        style={
+          {
+            "--line-nav-width": `${lineVariants.normal.width}px`,
+          } as React.CSSProperties
+        }
+      >
+        {items.map((item, index) => {
+          const isActive = item.href === activeHref;
 
-        return (
-          <LineNavItem
-            key={item.href}
-            ref={isActive ? activeItemRef : undefined}
-            title={item.title}
-            href={item.href}
-            active={isActive}
-            isLast={index === items.length - 1}
-            onClick={
-              onItemClick ? (event) => onItemClick(item, event) : undefined
-            }
-          />
-        );
-      })}
-    </nav>
+          return (
+            <LineNavItem
+              key={item.href}
+              ref={isActive ? activeItemRef : undefined}
+              title={item.title}
+              href={item.href}
+              active={isActive}
+              isLast={index === items.length - 1}
+              onClick={
+                onItemClick ? (event) => onItemClick(item, event) : undefined
+              }
+            />
+          );
+        })}
+      </nav>
+    </TooltipProvider>
   );
 }
 
@@ -91,6 +99,26 @@ const LineNavItem = memo(function LineNavItem({
   isLast?: boolean;
   onClick?: React.MouseEventHandler<HTMLAnchorElement>;
 }) {
+  const textRef = useRef<HTMLSpanElement>(null);
+  const [truncated, setTruncated] = useState(false);
+
+  useEffect(() => {
+    const element = textRef.current;
+    if (!element) {
+      return;
+    }
+
+    const update = () => {
+      setTruncated(element.scrollWidth > element.clientWidth + 1);
+    };
+
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <>
       {/*
@@ -98,25 +126,37 @@ const LineNavItem = memo(function LineNavItem({
         navigation in Next.js, swap `motion.a` for `motion.create(Link)`
         (import Link from "next/link").
       */}
-      <motion.a
-        ref={ref}
-        aria-current={active ? "page" : undefined}
-        className="group relative flex h-px items-center gap-3 after:absolute after:top-1/2 after:left-0 after:size-full after:-translate-y-1/2 after:p-3.5"
-        href={href}
-        initial={false}
-        animate={active ? "active" : "normal"}
-        whileHover="hover"
-        onClick={onClick}
-      >
-        <motion.span
-          className="block h-px shrink-0 bg-foreground/20 transition-[background-color] ease-out group-hover:bg-foreground group-aria-[current=page]:bg-foreground"
-          variants={lineVariants}
-          transition={{ type: "spring", stiffness: 200, damping: 20 }}
+      <Tooltip disabled={!truncated}>
+        <TooltipTrigger
+          render={
+            <motion.a
+              ref={ref}
+              aria-current={active ? "page" : undefined}
+              className="group relative flex h-px w-full min-w-0 items-center gap-3 after:absolute after:top-1/2 after:left-0 after:size-full after:-translate-y-1/2 after:p-3.5"
+              href={href}
+              initial={false}
+              animate={active ? "active" : "normal"}
+              whileHover="hover"
+              onClick={onClick}
+            >
+              <motion.span
+                className="block h-px shrink-0 bg-foreground/20 transition-[background-color] ease-out group-hover:bg-foreground group-aria-[current=page]:bg-foreground"
+                variants={lineVariants}
+                transition={{ type: "spring", stiffness: 200, damping: 20 }}
+              />
+              <span
+                ref={textRef}
+                className="min-w-0 truncate text-muted-foreground text-sm transition-[color] ease-out group-hover:text-foreground group-aria-[current=page]:text-foreground"
+              >
+                {title}
+              </span>
+            </motion.a>
+          }
         />
-        <span className="whitespace-nowrap text-muted-foreground text-sm transition-[color] ease-out group-hover:text-foreground group-aria-[current=page]:text-foreground">
-          {title}
-        </span>
-      </motion.a>
+        <TooltipContent side="right" sideOffset={12} className="max-w-72">
+          <span className="min-w-0 whitespace-normal text-left">{title}</span>
+        </TooltipContent>
+      </Tooltip>
 
       {!isLast && (
         <>
