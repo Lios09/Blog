@@ -32,4 +32,5 @@ export interface Post {
   toc: TOCItemType[];
   readingTime: ReadingTime;
   url: string;
+  publishedAt: string;
 }

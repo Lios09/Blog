@@ -1,0 +1,328 @@
+---
+title: "拆解 OpenAI Pando：用因果一致性和可复用 packfile 把 Git 扩到 agent 规模"
+description: "OpenAI 的 Git 后端 Pando 把写入降为按 ref 串行化、只对 ref 指针做 CAS，读取则复用推送时的 pack、通过 Git 协议 v2 的 packfile-uri 从区域缓存分发。后台用类似 LSM 的分层压实，让拉取规划做到 O(log Δ)。"
+date: "2026-11-02"
+author: "Lios09"
+tags:
+  - git
+  - distributed-systems
+  - packfile
+  - monorepo
+  - ai-agents
+  - openai
+  - lsm
+category: "Development"
+published: true
+featured: false
+---
+
+11 月 2 日 OpenAI 发了一篇工程博客 [Scaling Git at OpenAI](https://openai.com/index/scaling-git-at-openai)，介绍他们为 monorepo 重写的 Git 后端 **Pando**。
+
+背景很直接：Codex 让一个工程师同时推着好几个改动进 CI，每次 push 又会触发好几个 job 去 fetch 同一个 commit。去年底开始，旧系统 fetch / push 变慢、merge 失败，可靠性有时跌到 90% 以下。
+
+Pando 的结果：
+
+- 中位 push 延迟降低近 80%（博客原文开头写的是"近 5 倍"）
+- 每天分发近 **1 PB** Git 数据，只用少量 CPU 核
+- 单小时最高分发 57 TB 以上 pack，其中 99% 以上的字节来自本地磁盘缓存
+- 用标准云 VM 就能让 clone / fetch 跑满 10 Gbps 链路
+- **客户端完全不变**，依然是标准 Git 协议和 Git CLI
+
+我建议不要把它理解成"OpenAI 写了个更快的 Git 服务器"，而是看成：
+
+**"放弃两个大多数 Git 服务默认必须满足的假设，换来写入和读取都能水平扩展。"**
+
+这两个假设是：
+
+1. 整个仓库所有 ref 有一个一致的时间点快照；
+2. 每个客户端拿到一个为它量身计算的 packfile。
+
+下面逐个拆。
+
+---
+
+## 1. 先复习：Git 在同步什么
+
+Git 仓库要同步两样东西：**对象**和**引用**。
+
+```text
+refs/heads/main ──▶ C2 ──parent──▶ C1
+                    │              │
+                    ▼              ▼
+                    T2             T1
+                  ┌─┴──────┐     ┌─┴──────┐
+          parser.py      docs/  parser.py  docs/
+                │          │        │        │
+                B2         T3 ◀─────┼────────┘   （两个版本共用同一个 T3）
+                           │        B1
+                    README.md, usage.md
+                       B3      B4
+```
+
+- 对象：blob（文件内容）、tree（目录）、commit、tag，按内容哈希寻址，**不可变**
+- 引用：分支和 tag，指向 commit 的可变指针
+
+传输时：
+
+- **fetch**：客户端告诉服务端 `want`（想要的 commit）和 `have`（已有的 commit），服务端算出"wants 可达的对象 − haves 可达的对象"，压缩成一个 packfile 发回。
+- **push**：服务端先**广播自己有哪些 ref**，客户端据此排除服务端已有的对象，打一个 pack 推上去。这个 pack 可能依赖服务端已有对象，**单独拿出来不一定能还原历史**。
+
+这里埋了两个扩展性问题：
+
+- fetch 的 pack 是按每个客户端的 have 集合**现算**的，耗 CPU 和磁盘 I/O，几乎没法缓存；
+- 多副本服务要协调 ref 更新，如果所有写入走同一个顺序，**推不同分支的人也要互相等**。
+
+---
+
+## 2. 两种常见方案为什么不够
+
+OpenAI 在设计前建模对比了两种传统方案。
+
+### 三阶段提交（3PC）
+
+```text
+push ──▶ coordinator ──pack──▶ replica × N（并行写盘）
+                    ──lock ref / 检查旧值──▶ 多数派同意
+                    ──pre-commit──▶ 多数派确认
+                    ──commit──▶ 更新 ref
+```
+
+- 优点：每个副本都是完整仓库，读本地即可，所有客户端看到一致的 ref 视图
+- 问题：ref 一个一个更新，每次 push 多轮往返；**副本磁盘性能和网络延迟都在 push 关键路径上**，写入一多，副本既要吃 pack 又要扛读流量
+
+### 对象存储上的共享 WAL
+
+```text
+push ──▶ 上传 pack 到 blob store（可并行）
+     ──▶ 往共享 manifest 追加一条 ref 更新
+     ──▶ 对 manifest 做 compare-and-swap
+          失败 → 读取中间条目，校验仍然有效，重试
+```
+
+- 优点：pack 上传可以并行
+- 问题：**即使推的是毫不相关的分支，也要竞争同一个 manifest**。一次成功 CAS 的往返时间就是整个仓库发布频率的上限；批量合并能提吞吐，代价是排队和延迟。副本还得先读取、索引 blob store 里的 pack 才能对外服务，写入快过这一步时读者就会落后。
+
+博客里的模拟结论：3PC 在负载下写延迟明显升高（磁盘饱和），WAL 方案读延迟明显升高（服务器追不上日志）。
+
+---
+
+## 3. Pando 的第一个取舍：因果一致性
+
+Pando 不再保证"全仓库所有 ref 的同一时刻快照"，而是：
+
+- **单个 ref 的更新是可串行化的**；
+- 跨 ref 只保证**因果一致**：读一个 ref 时，读者看到的是写入者产生它时的那段历史。
+
+每次分支移动，Pando 在元数据存储里记录一个 **ref version**：
+
+```text
+ref version
+├── 新的 tip commit
+├── 提供这个 tip 的 packfile（不可变 blob，在 blob store）
+└── 这个 pack 依赖的更早的 ref versions
+```
+
+push 的流程：
+
+```text
+git push
+  │
+  ▼
+Pando 边接收边把 pack 流式写入 blob store
+  │   （单遍 decode 校验，不解包到本地仓库）
+  ▼
+多 key 事务：写 ref version + 原子更新 ref 指针（CAS 类操作）
+  │   同一事务里登记异步任务（如压实）
+  ▼
+ack，客户端立刻能读到自己刚推的内容（read-your-own-write）
+```
+
+关键点：**唯一有竞争的 key 是 ref 指针本身**。推不同分支的人互不阻塞，元数据读写是 O(1)，加 Pando 服务器、元数据存储单元或 blob store 就能扩写入吞吐。
+
+代价也写得很清楚：clone 协商期间如果 `foo` 和 `bar` 都在更新，一个客户端可能看到 `foo@v1, bar@v2`，另一个看到 `foo@v2, bar@v1`。OpenAI 的判断是：用户和 agent 关心的是**单个分支**的更新顺序，不关心全仓库的全局顺序。
+
+---
+
+## 4. 第二个取舍：push 时故意少广播 ref
+
+这是我觉得整篇最巧的一点。
+
+常规 Git 服务器在 push 时把所有分支都广播给客户端，像"把底牌全亮出来"。广播越多，客户端能排除的对象越多，pack 越小。但：
+
+- 几百万个分支时，**光 ref 广播就可能超过 100 MiB**；
+- 客户端排除的对象越多，这个 pack 就越依赖"服务端恰好有什么"，**别的客户端很难复用它**，因为服务端必须证明 fetch 方也有这些依赖。
+
+两个极端：
+
+| 广播的 ref       | push 的 pack          | 能否给别人复用                          |
+| ---------------- | --------------------- | --------------------------------------- |
+| 全部             | 最小                  | 很难，依赖太多                          |
+| 一个都不广播     | 整个仓库历史          | 谁都能用，但每次 fetch 都等于全量 clone |
+| **只广播 trunk** | 分支相对 trunk 的增量 | **任何有 trunk 的人都能直接用**         |
+
+Pando 默认推新 feature 分支时**只广播一个指定的 trunk 分支**作为基础。
+
+```text
+trunk:   ── T1 ── T2 ── T3        每次推 trunk：增量 pack
+                    \
+topic:               A ── B ── C  推 topic：pack 包含 A、B、C（相对 trunk）
+```
+
+代价：同一分支反复推，或者 stacked branch 叠在另一个 feature 分支上时，trunk 之外的内容每次都要重发，客户端带宽变大。但在 OpenAI 的 monorepo 里，这样产生的 pack **中位数不到 20 KiB，P99 不到 3 MiB**，换来的是"有 trunk 的读者用这一个 pack 就能拿到分支"。这笔账很划算。
+
+---
+
+## 5. 读取：不现算 pack，直接选 pack
+
+常规 Git fetch：
+
+```text
+haves, wants ──▶ 对象可达性求差集 ──▶ 压缩 ──▶ 发送
+                 （本地有各种索引加速，但结果难以缓存）
+```
+
+Pando fetch：
+
+```text
+haves, wants
+   │  用 push 时记录的 commit 映射
+   ▼
+解析成 ref versions
+   │  每个 ref version 链接一个已存在的 pack
+   ▼
+选出覆盖客户端所缺对象的 pack 集合
+   │  需要 topic 时，自动补上它依赖的 trunk pack
+   ▼
+返回 packfile URIs，inline 只发一个空 pack
+```
+
+客户端可能会下载一些自己已经有的对象，但服务端几乎不用计算，同样的字节可以发给很多客户端。
+
+这里用到的就是 Git 协议 v2 里一个不太为人知的能力：**`packfile-uri`**。
+
+---
+
+## 6. `packfile-uri` 是什么
+
+Git 协议一次 fetch 的 HTTP 响应里只能带**一个** packfile。`packfile-uri` 允许服务端在 packfile 之前额外返回一组 **URI**，让客户端另行下载这些 pack，比如从 CDN（见 [Git 文档：packfile-uri](https://git-scm.com/docs/packfile-uri)）。
+
+协议流程：
+
+```text
+server ──capability──▶ fetch=... packfile-uris
+client ──fetch 请求──▶ packfile-uris https        （声明自己接受的协议）
+server ──响应──▶ packfile-uris 段（若干 URI）
+              ──▶ packfile 段（剩余对象）
+client: 下载并索引所有 URI 指向的 pack + inline pack，再做连通性检查
+```
+
+文档里的几条约束值得注意：
+
+- **只在协议 v2 下可用**；
+- URI 指向的 pack 只能使用客户端声明支持的特性（如 `ofs-delta`、`thin-pack`）；
+- 客户端下载的 pack 会和普通 pack 一样带 `.keep` 文件，refs 更新完才能删；
+- 客户端配置 `fetch.uriprotocols` 决定接受哪些协议，**默认为空**，也就是默认不启用。
+
+上游 Git 自带的服务端实现是实验性的，只能按 blob 排除：
+
+```text
+# 服务端仓库配置，可写多条
+[uploadpack]
+    blobPackfileUri = <object-hash> <pack-hash> <uri>
+```
+
+组装待发送对象时，这些 blob 会被剔除，换成 URI。客户端侧：
+
+```bash
+git -c protocol.version=2 \
+    -c fetch.uriprotocols=https \
+    clone https://git.example.com/repo.git
+```
+
+想观察协议交互，可以打开包级追踪：
+
+```bash
+GIT_TRACE_PACKET=/tmp/trace.log git -c fetch.uriprotocols=https fetch origin
+grep packfile-uri /tmp/trace.log
+```
+
+文档也说明了协议设计留有余地：服务端未来可以按 commit 排除"该 commit 及其引用的全部对象"而不需要改协议，所以**客户端不应假设 URI 下载的 pack 只含单个 blob**。Pando 走的正是这条路：inline 只给空 pack，所有数据都走 URI。
+
+为了支撑这种用法，OpenAI 往上游贡献了一批 `packfile-uri` 相关的改进：并发下载、中断后清理、已完成下载的续传等边界情况的修复，接受已有 pack 时的额外校验，以及 `packfile-uri` 下载追踪和 pack 生成字节计数，方便分清慢 fetch 的时间花在生成 pack 还是传输上。
+
+---
+
+## 7. 区域缓存：Express
+
+URI 指向的 pack 由一个叫 **Express** 的服务分发：
+
+```text
+client ──▶ Pando（协商 + 选 pack，读元数据缓存）
+   │
+   └──packfile URIs──▶ Express（区域缓存 blob store）
+                        一致性哈希路由同一个 pack 到同一组节点
+                        缓存命中率 > 99%
+```
+
+每个地域一个 Pando 集群，blob store 和元数据存储各有缓存。按 commit ID 或特殊的 ref 读取请求，可以**完全由本集群缓存**响应。Pando 服务器本身只做协商和 pack 选择，不解包、不重新打包，跑在普通硬件上就够。
+
+---
+
+## 8. 压实：LSM 风格的分层 pack
+
+只复用 push 时的 pack 有个明显问题：monorepo 一天上万次 push，客户端追 trunk 难道要下载几万个 pack？
+
+Pando 借鉴 LSM-tree 的压实：
+
+```text
+L4  [==============================================]
+L3  [==============][==============][==============]
+L2  [====][====][====][====][====][====][====][====]
+L1  [][][][][][][][][][][][][][][][][][][][][][][][]
+L0  每次 push 产生一个 L0 pack（最小传输单元）
+```
+
+- 后台 worker 把 L0 收集成跨一段 ref versions 的 **cover**，层级几何增长，OpenAI monorepo 目前用到 L4；
+- cover 填满后由压实 worker 认领，重写成一个 pack，**重新组织对象、提高压缩率**；
+- 更重要的是，各层索引合起来像一个**跳表**：同时扫描每一层，就能在**对数时间**内选出要发的 pack 集合。
+
+所以 fetch 规划的元数据读取是 $O(\log \Delta)$，$\Delta$ 是客户端已有和想要之间相差的 ref version 数。客户端落后得越多，收益越明显。
+
+另一个和常规 Git 服务器不同的地方：**每一层的 pack 都保留，不做 GC**。各层都在持续对外服务，具体发哪层由客户端的 haves / wants 决定。对把 Pando 当 API 用、随机读单个对象的场景，从 L0 读通常比从 L4 读需要的数据更少，因为 L0 压缩得没那么狠。
+
+---
+
+## 9. 怎么上线、怎么验证
+
+几个工程细节值得记下：
+
+- **工期**：从立项到上生产 10 周，核心由一位工程师设计，agent 团队实现，少数工程师部署；今年 4 月开始承载生产流量
+- **语言**：Rust，无历史依赖
+- **一致性测试**：写了一套对照标准 Git 行为的 conformance test suite，让 agent 改完代码可以自测
+- **确定性模拟测试**：检查不变量，抓协商和 pack 规划里的竞态与回归
+- **形式化**：用 Lean 和 TLA+ 写了一套"Pando 理论"，用来发现实现 bug、证明系统性质
+- **迁移**：先作为旧系统的读写透传代理，两边保持同步，逐步切流量，无停机；代理期间还能合并去重请求，反过来减轻旧后端压力
+
+客户端侧，OpenAI 发了自己的 Git 发行版。除了已经合入上游的修复，还有两个点：
+
+- 客户端可以**并行**下载和索引互相独立的 pack；
+- 新增 **"explicit haves"**：服务端可以把分支当前 tip 和"推送方可以省略的历史"分开广播。这样客户端用 `--force-with-lease` 检查 feature 分支没被别人动过的同时，pack 仍然只相对 trunk 构建，任何有 trunk 的人都能复用。
+
+---
+
+## 10. 可以借鉴什么
+
+1. **先问清楚业务真正需要哪种一致性。** 全仓库快照很贵，而用户和 agent 实际依赖的只是单个分支的顺序。把一致性降到按 ref 串行化，竞争点就缩小到一个指针。
+2. **让写入方产出"可复用"的数据。** 少广播 ref，看起来让 push 变大了，实际是让每次 push 的产物变成了可以直接发给读者的缓存单元。
+3. **读路径的目标是"选择"而不是"计算"。** 一旦读取变成"从不可变对象里挑一组"，CDN、一致性哈希、区域缓存这些成熟手段就都能用上。
+4. **兼容协议，往上游贡献。** Pando 没有发明新客户端协议，而是把 Git 里早就存在却少有人用的 `packfile-uri` 用到了极致，再把踩到的坑修回上游。
+
+局限也要说明：Pando 本身没有开源，以上设计细节和数字都来自 OpenAI 的博客，没有独立复现。博客里的 3PC / WAL / Pando 对比是**教学用的合成模型，不是生产 benchmark**。
+
+---
+
+## 参考
+
+- [Scaling Git at OpenAI（OpenAI 工程博客）](https://openai.com/index/scaling-git-at-openai)
+- [Git 文档：packfile-uri](https://git-scm.com/docs/packfile-uri)
+- [OpenAI Git 补丁追踪](https://oai-git.openai.chatgpt.site/)

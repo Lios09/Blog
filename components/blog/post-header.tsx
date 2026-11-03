@@ -14,7 +14,7 @@ export async function PostHeader({ post }: Props) {
         <div className="mb-4 font-medium text-sm">{metadata.category}</div>
       )}
 
-      <h1 className="font-bold text-4xl tracking-tight md:text-5xl">
+      <h1 className="font-bold text-4xl leading-tight tracking-tight md:text-5xl">
         {metadata.title}
       </h1>
 

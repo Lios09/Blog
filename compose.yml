@@ -9,7 +9,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
-    ports:
+    expose:
       - "3000"
     restart: unless-stopped
 

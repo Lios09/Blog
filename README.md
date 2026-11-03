@@ -124,7 +124,7 @@ Then run:
 docker compose up -d --build
 ```
 
-Caddy forwards requests to `blog:3000` and manages HTTPS for the configured domain. The blog service's `ports: ["3000"]` setting assigns a host port rather than binding to host port `3000`. Access the site through your configured domain when using this setup.
+Caddy forwards requests to `blog:3000` and manages HTTPS for the configured domain. The blog service exposes port `3000` only on the Compose network, so the site is reachable through Caddy on ports `80` and `443`. Access the site through your configured domain when using this setup.
 
 ## Customization
 

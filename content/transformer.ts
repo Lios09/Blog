@@ -14,5 +14,6 @@ export function transformPost(post: ParsedPost): Post {
     toc: outline.toc,
     readingTime: calculateReadingTime(post.content),
     url: `/blog/${post.slug}`,
+    publishedAt: post.frontmatter.date?.toISOString() ?? "",
   };
 }
