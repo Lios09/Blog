@@ -1,4 +1,4 @@
-const SELF_HOSTED_URL = "http://zenix.com";
+const SELF_HOSTED_URL = "https://mizenix.com";
 
 function siteUrl(env: NodeJS.ProcessEnv = process.env): string {
   const vercelHost =
