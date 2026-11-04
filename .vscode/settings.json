@@ -7,6 +7,7 @@
     "editor.defaultFormatter": "biomejs.biome",
     "editor.codeActionsOnSave": {
       "source.organizeImports": "never",
+      "source.removeUnusedImports": "explicit",
       "source.organizeImports.biome": "explicit"
     }
   },
@@ -15,6 +16,7 @@
     "editor.defaultFormatter": "biomejs.biome",
     "editor.codeActionsOnSave": {
       "source.organizeImports": "never",
+      "source.removeUnusedImports": "explicit",
       "source.organizeImports.biome": "explicit"
     }
   },

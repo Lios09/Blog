@@ -3,7 +3,7 @@ import { BlogHeroBackground } from "@/components/blog-hero-background";
 import AppleHelloEffectHero from "@/components/ui/apple-hello-effect-hero";
 import { Highlighter } from "@/components/ui/highlighter";
 
-export default function Home() {
+export default async function Home() {
   return (
     <div className="relative flex min-h-screen w-full flex-col bg-zinc-50 font-sans dark:bg-black">
       {/* Animated greeting */}
