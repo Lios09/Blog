@@ -17,8 +17,8 @@ export const auth = betterAuth({
   plugins: [nextCookies()],
   socialProviders: {
     github: {
-      clientId: serverEnv.GITHUB_CLIENT_ID,
-      clientSecret: serverEnv.GITHUB_CLIENT_SECRET,
+      clientId: serverEnv.GH_CLIENT_ID ?? "",
+      clientSecret: serverEnv.GH_CLIENT_SECRET ?? "",
     },
   },
 });
