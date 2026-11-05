@@ -35,4 +35,8 @@ export const serverEnv = createEnv({
     RATE_LIMIT_WINDOW_HOURS: process.env.RATE_LIMIT_WINDOW_HOURS,
   },
   emptyStringAsUndefined: true,
+  // Opt-out for tooling that does not execute auth/db (e.g. some lint setups).
+  // CI/Docker builds should still supply placeholder values — skipValidation
+  // alone leaves constructors with `undefined`.
+  skipValidation: !!process.env.SKIP_ENV_VALIDATION,
 });

@@ -25,8 +25,8 @@ function resolvePostFilepath(slug: string): string | null {
     return null;
   }
 
-  const root = path.resolve(postsDirectory);
-  const filepath = path.resolve(root, `${slug}.mdx`);
+  const root = path.resolve(/*turbopackIgnore: true*/ postsDirectory);
+  const filepath = path.resolve(/*turbopackIgnore: true*/ root, `${slug}.mdx`);
   const relative = path.relative(root, filepath);
 
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -39,11 +39,11 @@ function resolvePostFilepath(slug: string): string | null {
 export function getPostSource(slug: string) {
   const filepath = resolvePostFilepath(slug);
 
-  if (!filepath || !fs.existsSync(filepath)) {
+  if (!filepath || !fs.existsSync(/*turbopackIgnore: true*/ filepath)) {
     return null;
   }
 
-  return fs.readFileSync(filepath, "utf8");
+  return fs.readFileSync(/*turbopackIgnore: true*/ filepath, "utf8");
 }
 
 export async function getPostUpdatedAt(slug: string) {
@@ -53,14 +53,14 @@ export async function getPostUpdatedAt(slug: string) {
     throw new Error(`Invalid post slug: ${slug}`);
   }
 
-  const stats = await fs.promises.stat(filepath);
+  const stats = await fs.promises.stat(/*turbopackIgnore: true*/ filepath);
 
   return stats.mtime;
 }
 
 export function getPostSlugs() {
   return fs
-    .readdirSync(postsDirectory)
+    .readdirSync(/*turbopackIgnore: true*/ postsDirectory)
     .filter((file) => file.endsWith(".mdx"))
     .map((file) => file.replace(/\.mdx$/, ""))
     .filter(isSafePostSlug);

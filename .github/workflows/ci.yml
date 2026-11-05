@@ -18,6 +18,13 @@ env:
   HUSKY: '0'
   NODE_VERSION_FILE: .node-version
   PNPM_LOCKFILE: pnpm-lock.yaml
+  # Placeholders so `next build` can import auth/db modules without CI secrets.
+  # Runtime deployments must still inject real values.
+  DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+  BETTER_AUTH_URL: http://localhost:3000
+  BETTER_AUTH_SECRET: ci-build-secret-must-be-at-least-32-chars
+  GITHUB_CLIENT_ID: ci-github-client-id
+  GITHUB_CLIENT_SECRET: ci-github-client-secret
 
 jobs:
   checks:

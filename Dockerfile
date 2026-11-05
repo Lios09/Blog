@@ -45,11 +45,14 @@ COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 
 ENV NODE_ENV=production
-
-# Next.js collects completely anonymous telemetry data about general usage.
-# Learn more here: https://nextjs.org/telemetry
-# Uncomment the following line in case you want to disable telemetry during the build.
-# ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_TELEMETRY_DISABLED=1
+# Build-time placeholders only — runner gets real secrets from compose/host.
+# Required because importing auth/db validates these during `next build`.
+ENV DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build
+ENV BETTER_AUTH_URL=http://localhost:3000
+ENV BETTER_AUTH_SECRET=docker-build-secret-must-be-at-least-32-chars
+ENV GITHUB_CLIENT_ID=docker-build-github-client-id
+ENV GITHUB_CLIENT_SECRET=docker-build-github-client-secret
 
 # Build Next.js application
 # If you want to speed up Docker rebuilds, you can cache the build artifacts
