@@ -9,7 +9,7 @@ const globalForPg = globalThis as unknown as {
 
 const client =
   globalForPg.pgClient ??
-  postgres(serverEnv.DATABASE_URL, {
+  postgres(serverEnv.DATABASE_URL ?? "", {
     prepare: false,
   });
 
