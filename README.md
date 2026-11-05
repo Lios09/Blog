@@ -17,7 +17,7 @@ A personal blog built with the Next.js App Router, with posts stored as local MD
 
 | Area | Tools |
 | --- | --- |
-| Framework | Next.js 16.3.4 · React 19.2 · TypeScript |
+| Framework | Next.js 16.4.5 · React 19.3 · TypeScript |
 | Styling and interaction | Tailwind CSS 4 · shadcn/ui · Base UI · Motion |
 | Content processing | MDX · gray-matter · Zod · remark / rehype |
 | Code and diagrams | Shiki · Twoslash · Mermaid · KaTeX |
@@ -26,7 +26,7 @@ A personal blog built with the Next.js App Router, with posts stored as local MD
 
 ## Local Development
 
-Use Node.js `26.12.1` (recorded in `.node-version`) to match CI. Docker CI reads this same file; local Docker builds default to the latest LTS unless `NODE_VERSION` is supplied. The project specifies `pnpm@12.15.0` as its package manager.
+Use Node.js `26.12.1` (recorded in `.node-version`) to match CI and the Dockerfile default (`26.12.1-slim`). Override Docker with `NODE_VERSION="$(cat .node-version)-slim"` when needed. The project specifies `pnpm@12.15.0` as its package manager.
 
 From the project root, run:
 
@@ -107,7 +107,7 @@ pnpm start
 
 The server listens on port `3000` by default.
 
-Canonical URLs, Open Graph images, and the RSS feed use the Vercel hostname when the app is built on Vercel, and `http://zenix.com` otherwise. The self-hosted origin is `SELF_HOSTED_URL` in [`config/site.ts`](config/site.ts).
+Canonical URLs, Open Graph images, robots, sitemap, and the RSS feed resolve through `siteUrl()` in [`config/site.ts`](config/site.ts): `SITE_URL` if set, otherwise the Vercel hostname, otherwise `https://blog.mizenix.com` (same host as the Caddy site address).
 
 ### Docker and Caddy
 
@@ -115,7 +115,7 @@ The repository includes a multi-stage `Dockerfile`, a `compose.yml` file, and a 
 
 Standalone output is enabled in `next.config.ts` for the Docker image.
 
-1. Replace `blog.example.com` in `Caddyfile` with your domain and point its DNS records to your server.
+1. Set the site address in `Caddyfile` (currently `blog.mizenix.com`) and keep `SITE_URL` / `SELF_HOSTED_URL` in [`config/site.ts`](config/site.ts) on the same origin. Point DNS at your server.
 2. Make ports `80` and `443` available to Caddy on the server.
 
 Then run:
@@ -161,11 +161,11 @@ Docker CI builds and pushes the image; it does not start containers. GitHub Acti
 For a local Compose build using the CI Node.js version:
 
 ```bash
-NODE_VERSION="$(cat .node-version)" docker compose build blog
+NODE_VERSION="$(cat .node-version)-slim" docker compose build blog
 ```
 
 For a direct Docker build:
 
 ```bash
-docker build --build-arg NODE_VERSION="$(cat .node-version)" --tag blog-app:local .
+docker build --build-arg NODE_VERSION="$(cat .node-version)-slim" --tag blog-app:local .
 ```

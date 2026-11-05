@@ -9,6 +9,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+      SITE_URL: "https://blog.mizenix.com"
     expose:
       - "3000"
     restart: unless-stopped

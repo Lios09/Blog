@@ -1,4 +1,5 @@
 import type { MetadataRoute } from "next";
+import { SITE_INFO } from "@/config/site";
 
 export default function robots(): MetadataRoute.Robots {
   return {
@@ -7,6 +8,6 @@ export default function robots(): MetadataRoute.Robots {
       allow: "/",
       disallow: [],
     },
-    sitemap: "https://mizenix.com/sitemap.xml",
+    sitemap: `${SITE_INFO.url}/sitemap.xml`,
   };
 }
