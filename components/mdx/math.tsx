@@ -13,7 +13,7 @@ export function MathLatex({ children }: Props) {
   return (
     <div
       className="my-8 overflow-x-auto"
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: HTML has been sanitized with DOMPurify
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: KaTeX HTML from trusted author MDX; not user input
       dangerouslySetInnerHTML={{
         __html: html,
       }}

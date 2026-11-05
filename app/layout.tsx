@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Providers } from "@/components/providers";
-import { SITE_INFO } from "@/config/site";
+import { OG_IMAGE, SITE_INFO } from "@/config/site";
 import { fontVariables } from "@/lib/fonts";
 import { cn } from "@/lib/utils";
 import "./globals.css";
@@ -22,8 +22,8 @@ export const metadata: Metadata = {
     images: [
       {
         url: SITE_INFO.ogImage,
-        width: 1280,
-        height: 720,
+        width: OG_IMAGE.width,
+        height: OG_IMAGE.height,
         alt: "Hello — Thoughts, notes, and things worth keeping.",
       },
     ],

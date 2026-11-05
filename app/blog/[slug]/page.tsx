@@ -7,7 +7,7 @@ import { PostContent } from "@/components/blog/post-content";
 import { PostHeader } from "@/components/blog/post-header";
 import { RelatedPosts } from "@/components/blog/related-posts";
 import { TableOfContents } from "@/components/blog/table-of-contents";
-import { SITE_INFO } from "@/config/site";
+import { OG_IMAGE, SITE_INFO } from "@/config/site";
 import { getAllPosts, getPostBySlug } from "@/content";
 
 import { getRelatedPosts } from "@/content/related";
@@ -45,8 +45,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       ? { url: post.metadata.cover, alt: post.metadata.title }
       : {
           url: SITE_INFO.ogImage,
-          width: 1280,
-          height: 720,
+          width: OG_IMAGE.width,
+          height: OG_IMAGE.height,
           alt: post.metadata.title,
         };
 

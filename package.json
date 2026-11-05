@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "biome check",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "node --import ./scripts/register-test-hooks.mjs --test content/*.test.mjs lib/mdx/*.test.mjs utils/shiki/*.test.mjs components/toc-active.test.mjs",
+    "test": "node --import ./scripts/register-test-hooks.mjs --test content/*.test.mjs config/*.test.mjs lib/mdx/*.test.mjs utils/shiki/*.test.mjs components/toc-active.test.mjs",
     "format": "biome format --write",
     "prepare": "husky"
   },

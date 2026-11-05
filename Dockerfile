@@ -3,9 +3,9 @@
 # ============================================
 
 # IMPORTANT: Node.js Version Maintenance
-# This Dockerfile uses Node.js 24.13.0-slim, which was the latest LTS version at the time of writing.
-# To ensure security and compatibility, regularly update the NODE_VERSION ARG to the latest LTS version.
-ARG NODE_VERSION=24.13.0-slim
+# Keep the default in sync with `.node-version` (append `-slim` for the official image tag).
+# Override with: docker build --build-arg NODE_VERSION="$(cat .node-version)-slim" .
+ARG NODE_VERSION=26.12.1-slim
 
 FROM node:${NODE_VERSION} AS dependencies
 

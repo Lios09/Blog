@@ -1,6 +1,8 @@
 "use client";
 
 import { motion } from "motion/react";
+import type { Route } from "next";
+import Link from "next/link";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -10,6 +12,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+
+const MotionLink = motion.create(Link);
 
 const lineVariants = {
   normal: { width: 24 },
@@ -191,19 +195,14 @@ const LineNavItem = memo(function LineNavItem({
 
   return (
     <>
-      {/*
-        Rendered as a plain anchor to stay framework-agnostic. For client-side
-        navigation in Next.js, swap `motion.a` for `motion.create(Link)`
-        (import Link from "next/link").
-      */}
       <Tooltip disabled={!truncated}>
         <TooltipTrigger
           render={
-            <motion.a
+            <MotionLink
               ref={ref}
               aria-current={active ? "page" : undefined}
               className="group relative flex h-px w-full min-w-0 items-center gap-3 after:absolute after:top-1/2 after:left-0 after:size-full after:-translate-y-1/2 after:p-3.5"
-              href={href}
+              href={href as Route}
               initial={false}
               animate={active ? "active" : "normal"}
               whileHover="hover"
@@ -220,7 +219,7 @@ const LineNavItem = memo(function LineNavItem({
               >
                 {title}
               </span>
-            </motion.a>
+            </MotionLink>
           }
         />
         <TooltipContent side="right" sideOffset={12} className="max-w-72">
