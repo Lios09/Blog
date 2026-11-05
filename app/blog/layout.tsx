@@ -1,8 +1,5 @@
 import type { Metadata } from "next";
-import { Suspense } from "react";
-import CurrentUser from "@/components/current-user";
 import { ThemeSwitcher } from "@/components/theme-switcher";
-import { Spinner } from "@/components/ui/spinner";
 import { OG_IMAGE, SITE_INFO } from "@/config/site";
 
 export const metadata: Metadata = {
@@ -43,9 +40,9 @@ const BlogLayout = async ({ children }: LayoutProps<"/blog">) => {
     <main>
       {children}
       <div className="fixed top-3 right-3 flex items-center gap-2">
-        <Suspense fallback={<Spinner />}>
+        {/* <Suspense fallback={<Spinner />}>
           <CurrentUser />
-        </Suspense>
+        </Suspense> */}
         <ThemeSwitcher />
       </div>
     </main>
