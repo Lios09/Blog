@@ -3,9 +3,10 @@ import { defineConfig } from "drizzle-kit";
 import { serverEnv } from "./data/serverEnv";
 
 export default defineConfig({
-  out: "./drizzle",
+  out: "./db/migrations",
   schema: "./db/schema.ts",
   dialect: "postgresql",
+  schemaFilter: ["public"],
   dbCredentials: {
     url: serverEnv.DATABASE_URL,
   },
