@@ -1,6 +1,8 @@
 import { drizzleAdapter } from "@better-auth/drizzle-adapter/relations-v2";
 import { betterAuth } from "better-auth";
 import { nextCookies } from "better-auth/next-js";
+import { headers } from "next/headers";
+import { cache } from "react";
 import { serverEnv } from "@/data/serverEnv";
 import db from "@/db/db";
 import * as schema from "@/db/schema";
@@ -19,4 +21,11 @@ export const auth = betterAuth({
       clientSecret: serverEnv.GITHUB_CLIENT_SECRET,
     },
   },
+});
+
+export const getCurrentUser = cache(async () => {
+  const session = await auth.api.getSession({
+    headers: await headers(),
+  });
+  return session?.user ?? null;
 });
