@@ -108,34 +108,37 @@ export default async function PostPage({ params }: Props) {
     : null;
 
   return (
-    <>
-      <aside className="fixed top-30 left-6 w-max max-w-50 self-start rounded-[0.75rem] border p-3 max-xl:hidden">
-        <LineNav
-          activeHref={`/blog/${slug}`}
-          items={allPosts?.map(({ metadata, slug: postSlug }) => ({
-            title: metadata.title,
-            href: `/blog/${postSlug}`,
-          }))}
-        />
-      </aside>
-      <article className="mx-auto max-w-6xl px-6 py-8">
-        {mathStyles}
-        <div className="grid lg:gap-6">
-          <article className="min-w-0 max-w-3xl">
-            <PostHeader post={post} />
+    <div className="mx-auto min-h-svh bg-background px-6 font-mono">
+      <div className="grid gap-x-8 md:items-start">
+        <aside className="fixed top-30 left-6 w-max max-w-50 self-start rounded-[0.75rem] border p-3 max-xl:hidden">
+          <LineNav
+            activeHref={`/blog/${slug}`}
+            items={allPosts?.map(({ metadata, slug: postSlug }) => ({
+              title: metadata.title,
+              href: `/blog/${postSlug}`,
+            }))}
+          />
+        </aside>
 
-            <div className="mt-12">
-              <PostContent source={post.content} />
-            </div>
+        <article className="mx-auto max-w-6xl px-6 py-8">
+          {mathStyles}
+          <div className="grid lg:gap-6">
+            <article className="min-w-0 max-w-3xl">
+              <PostHeader post={post} />
 
-            <RelatedPosts posts={relatedPosts} />
-          </article>
+              <div className="mt-12">
+                <PostContent source={post.content} />
+              </div>
 
-          <aside className="fixed top-[15%] right-0 hidden lg:block">
-            <TableOfContents toc={post.toc} />
-          </aside>
-        </div>
-      </article>
-    </>
+              <RelatedPosts posts={relatedPosts} />
+            </article>
+
+            <aside className="fixed top-[15%] right-0 hidden lg:block">
+              <TableOfContents toc={post.toc} />
+            </aside>
+          </div>
+        </article>
+      </div>
+    </div>
   );
 }

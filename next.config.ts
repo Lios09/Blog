@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["@shikijs/twoslash"],
   reactCompiler: process.env.NODE_ENV === "production",
   cacheComponents: true,
-  partialPrefetching: true,
+  partialPrefetching: false,
   experimental: { inlineCss: true },
   compiler:
     process.env.NODE_ENV === "production"
