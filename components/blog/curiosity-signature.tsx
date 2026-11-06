@@ -20,7 +20,7 @@ export function CuriositySignature() {
 
   if (!allowMotion) {
     return (
-      <p className="flex h-[90px] items-end font-heading text-[30px] text-foreground">
+      <p className="flex h-22.5 items-end font-heading text-[30px] text-foreground">
         {TEXT}
       </p>
     );

@@ -26,10 +26,6 @@ interface Props {
   }>;
 }
 
-// The article is the page. Awaiting `params` here is the content, not a hole
-// around an instant shell.
-export const instant = true;
-
 export function generateStaticParams() {
   return getAllPosts().map((post) => ({
     slug: post.slug,

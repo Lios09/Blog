@@ -1,31 +1,21 @@
-"use client";
-
-import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useEffect, useState } from "react";
 import dustyFieldSrc from "@/assets/figures/dusty-field.png";
-
-const ParticleField = dynamic(() =>
-  import("@/components/particle-field").then((mod) => mod.ParticleField),
-);
+import { ParticleField } from "@/components/particle-field";
 
 export function BlogHeroBackground() {
-  const [allowMotion, setAllowMotion] = useState(false);
-
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const update = () => setAllowMotion(!media.matches);
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, []);
-
   return (
     <div
       aria-hidden="true"
-      className="relative h-dvh w-dvw overflow-hidden bg-background"
+      className="absolute inset-0 overflow-hidden bg-background"
     >
-      {allowMotion ? (
+      <Image
+        src={dustyFieldSrc}
+        alt=""
+        fill
+        sizes="100vw"
+        className="object-cover motion-safe:hidden"
+      />
+      <div className="absolute inset-0 motion-reduce:hidden">
         <ParticleField
           src={dustyFieldSrc.src}
           sampleStep={2}
@@ -36,15 +26,7 @@ export function BlogHeroBackground() {
           renderScale={1}
           align="center"
         />
-      ) : (
-        <Image
-          src={dustyFieldSrc}
-          alt=""
-          fill
-          sizes="100vw"
-          className="object-cover"
-        />
-      )}
+      </div>
 
       <div
         className="pointer-events-none absolute inset-0"
