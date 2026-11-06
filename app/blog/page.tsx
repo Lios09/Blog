@@ -43,6 +43,7 @@ const HomeBlog = () => {
               >
                 <Link
                   href={`/blog/${slug}`}
+                  prefetch
                   className="group relative flex items-baseline justify-between gap-4 py-3"
                 >
                   <span className="text-subtle tracking-[-0.03em] transition-colors duration-200 group-hover:text-text">
