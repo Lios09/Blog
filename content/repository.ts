@@ -65,24 +65,6 @@ export function getPostSource(slug: string) {
   return fs.readFileSync(filepath, "utf8");
 }
 
-export async function getPostUpdatedAt(slug: string) {
-  const filepath = resolvePostFilepath(slug);
-
-  if (!filepath) {
-    throw new Error(`Invalid post slug: ${slug}`);
-  }
-
-  if (postsDirectoryOverride) {
-    const stats = await fs.promises.stat(/* turbopackIgnore: true */ filepath);
-
-    return stats.mtime;
-  }
-
-  const stats = await fs.promises.stat(filepath);
-
-  return stats.mtime;
-}
-
 export function getPostSlugs() {
   if (postsDirectoryOverride) {
     return fs

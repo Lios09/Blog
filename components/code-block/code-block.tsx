@@ -1,7 +1,7 @@
 import { TypeScript } from "@react-symbols/icons/files";
 import { FileIcon } from "@react-symbols/icons/utils";
 import type { ComponentProps } from "react";
-import { cn } from "@/lib/cn";
+import { cn } from "@/lib/utils";
 
 const CodeShikiBlock = ({
   children,

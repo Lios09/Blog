@@ -37,15 +37,12 @@ export const metadata: Metadata = {
 
 const BlogLayout = async ({ children }: LayoutProps<"/blog">) => {
   return (
-    <main>
+    <div>
       {children}
       <div className="fixed top-3 right-3 flex items-center gap-2">
-        {/* <Suspense fallback={<Spinner />}>
-          <CurrentUser />
-        </Suspense> */}
         <ThemeSwitcher />
       </div>
-    </main>
+    </div>
   );
 };
 

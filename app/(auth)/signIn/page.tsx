@@ -23,16 +23,17 @@ const SignInPage = () => {
   };
 
   return (
-    <div className="flex h-screen flex-col items-center justify-center gap-3">
+    <main className="flex h-screen flex-col items-center justify-center gap-3">
+      <h1 className="sr-only">Sign in</h1>
       <Button disabled={pending} onClick={signInByGithub}>
-        {pending ? "Redirecting…" : "SignInGithub"}
+        {pending ? "Redirecting…" : "Sign in with GitHub"}
       </Button>
       {error ? (
         <p className="text-destructive text-sm" role="alert">
           {error}
         </p>
       ) : null}
-    </div>
+    </main>
   );
 };
 

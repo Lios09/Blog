@@ -2,7 +2,7 @@
 
 import { CheckIcon, CopyIcon } from "lucide-react";
 import { type ComponentProps, useEffect, useState } from "react";
-import { cn } from "@/lib/cn";
+import { cn } from "@/lib/utils";
 import { copyToClipboard } from "@/utils/copy";
 
 interface CopyButtonProps extends ComponentProps<"button"> {
@@ -44,6 +44,8 @@ const CopyButton = ({
       )}
       onClick={handleCopy}
       {...props}
+      type="button"
+      aria-label={isCopied ? "Copied" : "Copy code"}
     >
       {isCopied ? (
         <CheckIcon

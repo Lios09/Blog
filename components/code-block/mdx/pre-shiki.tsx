@@ -8,7 +8,7 @@ import {
   CodeShikiBlock,
 } from "@/components/code-block/code-block";
 import { CopyButton } from "@/components/mdx/copy-button";
-import { cn } from "@/lib/cn";
+import { cn } from "@/lib/utils";
 import { reactToText } from "@/utils/react-to-text";
 
 interface PreProps extends ComponentProps<"pre"> {

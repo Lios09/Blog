@@ -6,28 +6,26 @@ import { Highlighter } from "@/components/ui/highlighter";
 export default async function Home() {
   return (
     <div className="relative flex min-h-screen w-full flex-col bg-zinc-50 font-sans dark:bg-black">
-      {/* Animated greeting */}
+      <div className="absolute inset-0">
+        <BlogHeroBackground />
+      </div>
+
       <header className="pointer-events-none absolute inset-x-0 top-16 z-20 flex justify-center sm:top-20 md:top-24">
         <AppleHelloEffectHero />
       </header>
 
-      <div className="absolute inset-x-0 top-70 z-20 flex flex-col items-center gap-2 text-center font-mono">
-        <p>
-          Thoughts,
+      <main className="absolute inset-x-0 top-70 z-20 flex flex-col items-center gap-2 text-center font-mono">
+        <h1 className="font-normal">
+          Thoughts,{" "}
           <Highlighter action="underline" color="#FF9800">
-            <Link href={"/blog"}>notes</Link>
+            <Link href="/blog">notes</Link>
           </Highlighter>
-          ,and things{" "}
+          , and things{" "}
           <Highlighter action="highlight" color="#87CEFA">
             worth keeping.
-          </Highlighter>{" "}
-        </p>
-        <p>Take a look at the .</p>
-      </div>
-
-      {/* Main content */}
-      <main className="flex min-h-screen flex-1 items-center justify-center">
-        <BlogHeroBackground />
+          </Highlighter>
+        </h1>
+        <p>Take a look at the blog.</p>
       </main>
     </div>
   );

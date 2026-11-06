@@ -13,55 +13,12 @@ interface Props {
   source: string;
 }
 
-// const codeBlockMetadataTransformer: ShikiTransformer = {
-//   name: "code-block-metadata",
-//   pre(node) {
-//     node.properties["data-language"] = this.options.lang;
-
-//     const title = (this.options.meta as { title?: string } | undefined)?.title;
-//     if (title) {
-//       node.properties["data-title"] = title;
-//     }
-//   },
-// };
-
 /** Compile a trusted post string into an MDX React Server Component. */
 export async function MdxContent({ source }: Props) {
   const { default: MDXContent } = await evaluate(source, {
     ...runtime,
     remarkPlugins: [remarkGfm, remarkCallout, remarkCode, remarkMath],
-    rehypePlugins: [
-      rehypeSlug,
-      rehypeKatex,
-      // [
-      //   rehypeShiki,
-      //   {
-      //     langs: [
-      //       "html",
-      //       "js",
-      //       "ts",
-      //       "tsx",
-      //       "css",
-      //       "bash",
-      //       "json",
-      //       "mdx",
-      //       "go",
-      //       "sql",
-      //     ],
-      //     themes: {
-      //       light: "one-light",
-      //       dark: "one-dark-pro",
-      //     },
-      //     defaultColor: false,
-      //     defaultLanguage: "text",
-      //     fallbackLanguage: "text",
-      //     parseMetaString(metaString: string) {
-      //       return { title: parseCodeMeta(metaString).title };
-      //     },
-      //     transformers: [codeBlockMetadataTransformer],
-      //   },
-      // ],
-    ],
+    rehypePlugins: [rehypeSlug, rehypeKatex],
   });
 
   return <MDXContent components={mdxComponents} />;

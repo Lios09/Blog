@@ -288,6 +288,13 @@
   @apply rounded-md border bg-muted/50 px-1 py-px font-mono text-sm font-normal whitespace-pre-wrap in-data-table-nowrap:whitespace-nowrap retina:border-[0.5px];
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in-up.opacity-0 {
+    animation: none;
+    opacity: 1;
+  }
+}
+
 @utility prose-no-margin {
   & > :first-child {
     @apply mt-0;

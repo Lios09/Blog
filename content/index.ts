@@ -24,7 +24,6 @@ export function getAllPosts() {
   return getPostSlugs()
     .map(getPostBySlug)
     .filter((post): post is Post => post !== null)
-    .filter((post) => post.metadata.published)
     .sort((a, b) => b.metadata.date.getTime() - a.metadata.date.getTime());
 }
 

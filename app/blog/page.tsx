@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { TextRoll } from "@/components/text-roll";
-import { Signature } from "@/components/ui/signature";
+import { CuriositySignature } from "@/components/blog/curiosity-signature";
 import { getAllPosts } from "@/content";
 import { formatDate } from "@/lib/utils";
 
@@ -31,34 +30,23 @@ const HomeBlog = () => {
             </p>
           </header>
 
-          <Signature
-            key={"home"}
-            text="Curiosity drives the code."
-            fontSize={30}
-            duration={1}
-          />
+          <CuriositySignature />
 
           <div className="flex flex-col gap-1">
-            {[...posts].map(({ metadata, slug }, i) => (
+            {posts.map(({ metadata, slug }, i) => (
               <div
-                className={`animate-fade-in-up opacity-0`}
+                className="animate-fade-in-up opacity-0"
                 key={slug}
                 style={{
                   animationDelay: `${(i + 1) * 0.05}s`,
                 }}
               >
                 <Link
-                  href="/blog/[slug]"
-                  as={`/blog/${slug}`}
+                  href={`/blog/${slug}`}
                   className="group relative flex items-baseline justify-between gap-4 py-3"
                 >
-                  <span className="text-subtle transition-colors duration-200 group-hover:text-text">
-                    <TextRoll
-                      center
-                      className="tracking-[-0.03em] transition-colors"
-                    >
-                      {metadata.title}
-                    </TextRoll>
+                  <span className="text-subtle tracking-[-0.03em] transition-colors duration-200 group-hover:text-text">
+                    {metadata.title}
                   </span>
                   <span className="shrink-0 text-sm">
                     {formatDate(metadata.date)}
@@ -68,27 +56,6 @@ const HomeBlog = () => {
               </div>
             ))}
           </div>
-
-          {/* <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {(posts ?? []).map(({ metadata, readingTime, url, slug }) => (
-            <ArticleCard
-              article={{
-                slug,
-                category: metadata.tags[0],
-                title: metadata.title,
-                read: readingTime.text,
-                hueA: "#fde68a",
-                hueB: "#fb7185",
-                pattern: "dots",
-                initials: "A",
-                author: metadata.author,
-                blurb: metadata.description,
-                url,
-              }}
-              key={url}
-            />
-          ))}
-        </div> */}
         </div>
       </div>
     </main>

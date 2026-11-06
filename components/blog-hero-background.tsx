@@ -1,24 +1,52 @@
+"use client";
+
+import dynamic from "next/dynamic";
+import Image from "next/image";
+import { useEffect, useState } from "react";
 import dustyFieldSrc from "@/assets/figures/dusty-field.png";
-import { ParticleField } from "@/components/particle-field";
+
+const ParticleField = dynamic(() =>
+  import("@/components/particle-field").then((mod) => mod.ParticleField),
+);
 
 export function BlogHeroBackground() {
-  // const typingImpulse = useRef(0);
+  const [allowMotion, setAllowMotion] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setAllowMotion(!media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
   return (
-    <div className="relative h-dvh w-dvw overflow-hidden bg-background">
-      <ParticleField
-        src={dustyFieldSrc.src}
-        sampleStep={2}
-        // This source is intentionally very dark; a threshold of 48 filters
-        // out nearly every visible pixel before the particle field can sample it.
-        threshold={4}
-        dotSize={0.9}
-        renderScale={1}
-        align="center"
-        // typingImpulseRef={typingImpulse}
-      />
+    <div
+      aria-hidden="true"
+      className="relative h-dvh w-dvw overflow-hidden bg-background"
+    >
+      {allowMotion ? (
+        <ParticleField
+          src={dustyFieldSrc.src}
+          sampleStep={2}
+          // This source is intentionally very dark; a threshold of 48 filters
+          // out nearly every visible pixel before the particle field can sample it.
+          threshold={4}
+          dotSize={0.9}
+          renderScale={1}
+          align="center"
+        />
+      ) : (
+        <Image
+          src={dustyFieldSrc}
+          alt=""
+          fill
+          sizes="100vw"
+          className="object-cover"
+        />
+      )}
 
       <div
-        aria-hidden
         className="pointer-events-none absolute inset-0"
         style={{
           background:
@@ -26,7 +54,6 @@ export function BlogHeroBackground() {
         }}
       />
       <div
-        aria-hidden
         className="pointer-events-none absolute inset-x-0 bottom-0 h-[60%]"
         style={{
           background:

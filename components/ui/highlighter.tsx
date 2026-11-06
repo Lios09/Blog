@@ -5,6 +5,7 @@ import type React from "react";
 import { useLayoutEffect, useRef } from "react";
 import { annotate } from "rough-notation";
 import type { RoughAnnotation } from "rough-notation/lib/model";
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 
 type AnnotationAction =
   | "highlight"
@@ -39,6 +40,7 @@ export function Highlighter({
   isView = false,
 }: HighlighterProps) {
   const elementRef = useRef<HTMLSpanElement>(null);
+  const reduceMotion = usePrefersReducedMotion();
 
   const isInView = useInView(elementRef, {
     once: true,
@@ -54,12 +56,15 @@ export function Highlighter({
     let resizeObserver: ResizeObserver | null = null;
 
     if (shouldShow && element) {
+      const prefersReduce =
+        reduceMotion ||
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       const annotationConfig = {
         type: action,
         color,
         strokeWidth,
-        animationDuration,
-        iterations,
+        animationDuration: prefersReduce ? 0 : animationDuration,
+        iterations: prefersReduce ? 1 : iterations,
         padding,
         multiline,
       };
@@ -92,6 +97,7 @@ export function Highlighter({
     iterations,
     padding,
     multiline,
+    reduceMotion,
   ]);
 
   return (

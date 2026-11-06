@@ -11,6 +11,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { cn } from "@/lib/utils";
 
 const MotionLink = motion.create(Link);
@@ -192,6 +193,7 @@ const LineNavItem = memo(function LineNavItem({
     },
     [href, observeTitle],
   );
+  const reduceMotion = usePrefersReducedMotion();
 
   return (
     <>
@@ -205,13 +207,17 @@ const LineNavItem = memo(function LineNavItem({
               href={href as Route}
               initial={false}
               animate={active ? "active" : "normal"}
-              whileHover="hover"
+              whileHover={reduceMotion ? undefined : "hover"}
               onClick={onClick}
             >
               <motion.span
                 className="block h-px shrink-0 bg-foreground/20 transition-[background-color] ease-out group-hover:bg-foreground group-aria-[current=page]:bg-foreground"
                 variants={lineVariants}
-                transition={{ type: "spring", stiffness: 200, damping: 20 }}
+                transition={
+                  reduceMotion
+                    ? { duration: 0 }
+                    : { type: "spring", stiffness: 200, damping: 20 }
+                }
               />
               <span
                 ref={titleRef}

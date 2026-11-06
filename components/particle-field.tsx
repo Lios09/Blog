@@ -197,6 +197,10 @@ export function ParticleField({
   denseParticlesRef.current = denseParticles;
 
   useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+
     const canvas = canvasRef.current;
     const wrapper = wrapperRef.current;
     if (!canvas || !wrapper) return;
@@ -591,6 +595,7 @@ export function ParticleField({
   return (
     <div
       ref={wrapperRef}
+      aria-hidden="true"
       className={className}
       style={{ position: "relative", width: "100%", height: "100%" }}
     >

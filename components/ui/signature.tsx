@@ -32,7 +32,7 @@ interface GlyphPath {
   key: string;
 }
 
-export function Signature({
+export default function Signature({
   text = "Signature",
   color = "currentColor",
   fontSize = 32,
@@ -100,8 +100,11 @@ export function Signature({
       }
     }
 
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+
     load();
-    // return () => setPaths([]);
   }, [text, fontSize, baseline, horizontalPadding, fontUrl]);
 
   const variants = {
@@ -126,12 +129,15 @@ export function Signature({
       height={height}
       viewBox={`0 0 ${width} ${height}`}
       fill="none"
+      role="img"
+      aria-label={text}
       className={cn("overflow-visible text-foreground", className)}
       initial="hidden"
       whileInView={inView ? "visible" : undefined}
       animate={inView ? undefined : "visible"}
       viewport={{ once }}
     >
+      <title>{text}</title>
       <defs>
         <mask id={maskId} maskUnits="userSpaceOnUse">
           {paths.map(({ d, key }, i) => (

@@ -1,7 +1,7 @@
 import { GeistMono } from "geist/font/mono";
 import { GeistPixelSquare } from "geist/font/pixel";
 import { GeistSans } from "geist/font/sans";
-import { cn } from "./cn";
+import { cn } from "./utils";
 
 const fontSans = GeistSans;
 const fontMono = GeistMono;

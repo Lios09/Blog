@@ -8,8 +8,8 @@ import {
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
 import { useSound } from "@/hooks/use-sound";
-import { cn } from "@/lib/cn";
 import { uMiniMapOpenSound } from "@/lib/u-mini-map-open";
+import { cn } from "@/lib/utils";
 
 export type TOCItemType = {
   title: React.ReactNode;

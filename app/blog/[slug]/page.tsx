@@ -7,16 +7,28 @@ import { PostContent } from "@/components/blog/post-content";
 import { PostHeader } from "@/components/blog/post-header";
 import { RelatedPosts } from "@/components/blog/related-posts";
 import { TableOfContents } from "@/components/blog/table-of-contents";
+import { LineNav } from "@/components/line-nav";
 import { OG_IMAGE, SITE_INFO } from "@/config/site";
 import { getAllPosts, getPostBySlug } from "@/content";
-
 import { getRelatedPosts } from "@/content/related";
+
+function postContainsMath(source: string) {
+  const prose = source.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`/g, "");
+
+  if (prose.includes("<MathLatex")) return true;
+  if (/\$\$[\s\S]+?\$\$/.test(prose)) return true;
+  return /(?<!\$)\$(?!\$)(?:\\.|[^$\n])+?\$(?!\$)/.test(prose);
+}
 
 interface Props {
   params: Promise<{
     slug: string;
   }>;
 }
+
+// The article is the page. Awaiting `params` here is the content, not a hole
+// around an instant shell.
+export const instant = true;
 
 export function generateStaticParams() {
   return getAllPosts().map((post) => ({
@@ -89,25 +101,41 @@ export default async function PostPage({ params }: Props) {
   const allPosts = getAllPosts();
 
   const relatedPosts = getRelatedPosts(post, allPosts);
+  const mathStyles = postContainsMath(post.content)
+    ? await import("@/components/mdx/katex-styles").then(({ KatexStyles }) => (
+        <KatexStyles />
+      ))
+    : null;
 
   return (
-    <main className="mx-auto max-w-6xl px-6 py-8">
-      <div className="grid lg:gap-6">
-        {/* <div className="grid lg:grid-cols-[1fr_100px] lg:gap-6"> */}
-        <article className="min-w-0 max-w-3xl">
-          <PostHeader post={post} />
+    <>
+      <aside className="fixed top-30 left-6 w-max max-w-50 self-start rounded-[0.75rem] border p-3 max-xl:hidden">
+        <LineNav
+          activeHref={`/blog/${slug}`}
+          items={allPosts?.map(({ metadata, slug: postSlug }) => ({
+            title: metadata.title,
+            href: `/blog/${postSlug}`,
+          }))}
+        />
+      </aside>
+      <article className="mx-auto max-w-6xl px-6 py-8">
+        {mathStyles}
+        <div className="grid lg:gap-6">
+          <article className="min-w-0 max-w-3xl">
+            <PostHeader post={post} />
 
-          <div className="mt-12">
-            <PostContent source={post.content} />
-          </div>
+            <div className="mt-12">
+              <PostContent source={post.content} />
+            </div>
 
-          <RelatedPosts posts={relatedPosts} />
-        </article>
+            <RelatedPosts posts={relatedPosts} />
+          </article>
 
-        <aside className="fixed top-[15%] right-0 hidden lg:block">
-          <TableOfContents toc={post.toc} />
-        </aside>
-      </div>
-    </main>
+          <aside className="fixed top-[15%] right-0 hidden lg:block">
+            <TableOfContents toc={post.toc} />
+          </aside>
+        </div>
+      </article>
+    </>
   );
 }

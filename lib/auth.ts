@@ -7,6 +7,9 @@ import { serverEnv } from "@/data/serverEnv";
 import db from "@/db/db";
 import * as schema from "@/db/schema";
 
+const githubClientId = serverEnv.GH_CLIENT_ID;
+const githubClientSecret = serverEnv.GH_CLIENT_SECRET;
+
 export const auth = betterAuth({
   baseURL: serverEnv.BETTER_AUTH_URL,
   secret: serverEnv.BETTER_AUTH_SECRET,
@@ -15,12 +18,16 @@ export const auth = betterAuth({
     schema,
   }),
   plugins: [nextCookies()],
-  socialProviders: {
-    github: {
-      clientId: serverEnv.GH_CLIENT_ID ?? "",
-      clientSecret: serverEnv.GH_CLIENT_SECRET ?? "",
-    },
-  },
+  ...(githubClientId && githubClientSecret
+    ? {
+        socialProviders: {
+          github: {
+            clientId: githubClientId,
+            clientSecret: githubClientSecret,
+          },
+        },
+      }
+    : {}),
 });
 
 export const getCurrentUser = cache(async () => {
