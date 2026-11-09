@@ -1,0 +1,708 @@
+---
+title: "KV-cache 感知的推理路由：读 Kinference 的 PredictedTTFT 与 InferencePolicy，再用 Go 实测前缀亲和与热点"
+description: "Buoyant 开源的 Kinference 面向 vLLM + Kubernetes：读取 KV-cache 事件与引擎指标，预测 TTFT，再用 InferencePolicy 的 consider/exclude/select/onEmpty 选端点。本文先把官方 95% 中位 TTFT 降幅与 7.4× goodput 的测量条件讲清楚，并对照仓库提交 be2a7ad 指出请求 tag 尚无来源、示例策略与 CRD/Helm 默认值的落差。最后附 Go mock：4 后端、闭环负载、三次中位数；共享前缀下轮询/只看前缀/综合打分 goodput 为 44.9/130.3/195.7 req/s；热门前缀下只看前缀把 58–62% 请求压到单后端、goodput 36.9、p99 518 ms，综合打分 217.6 且份额约 25%；分词模板不一致时 goodput 从约 200 跌到 10.7。mock 只比较路由策略，不代表真实 vLLM/Kinference 性能。"
+date: "2026-11-08"
+author: "Lios09"
+tags:
+  - llm-inference
+  - kv-cache
+  - load-balancing
+  - vllm
+  - go
+category: "Development"
+published: true
+featured: false
+---
+
+## 1. 先界定数字：95% 和 7.4× 是谁、在什么条件下测的
+
+Kinference 由 Buoyant 在 2026-11-04 通过 [vLLM 博客](https://vllm-project.github.io/2026/11/04/introducing-kinference.html)发布，代码在 [Kinference-AI/kinference](https://github.com/Kinference-AI/kinference)（Apache 2.0）。博客正文只给了两句结论：在某一类负载上，相比标准 Kubernetes 负载均衡（kube-proxy 背后的 Service），**中位 TTFT 降低 95%、中位端到端延迟降低 45%**；在容量测试里，**shared-prefix 负载 goodput 为 7.4×，multiturn 约 3.5×**。详细方法在它链接的 [Buoyant 基准文章](https://buoyant.io/blog/distributed-inference-benchmarks-kinference-vs-plain-kubernetes)里，本文的数字都来自这两篇，没有从图片估读。
+
+| 项目          | Buoyant 公布的测试条件                                                                                                                                        |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 集群          | AWS；两套相同的 vLLM 0.31.0 池，各 3 个 pod，每个 pod 一张 L40S                                                                                               |
+| 模型          | Qwen-3.8-27B-FP8，dense                                                                                                                                       |
+| 对照          | 一个 OpenAI chat-completion 端点走 Kinference，另一个直接打 Service（ClusterIP）；kube-proxy iptables 模式按新连接随机选 pod，GuideLLM 几乎每个请求都开新连接 |
+| 压测工具      | GuideLLM 0.8.1，独立节点                                                                                                                                      |
+| shared-prefix | 24 个 16,000 token 的共享前缀之一 + 256 个独有 token，输出 256                                                                                                |
+| multiturn     | 8 轮对话：首轮 8,000 token，之后每轮新增 400 token 加历史，输出 200                                                                                           |
+| control       | 16,256 token 完全独立的 prompt，输出 256                                                                                                                      |
+
+两组结果的口径不同，不能混用：
+
+| 数字           | 实际含义                                                                                                                                                  |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 中位 TTFT −95% | **低负载延迟测试**（开环 Poisson，shared-prefix 12 req/min）：6.88 s → 0.31 s，比值 0.045，95% CI [0.042, 0.596]。multiturn 为 1.70 s → 0.59 s（约 −65%） |
+| 中位 E2E −45%  | 同一测试 shared-prefix：20.5 s → 11.3 s                                                                                                                   |
+| 7.4× goodput   | **容量测试**（闭环固定并发 4–32）里「峰值对峰值」：kinference 在并发 32 的 103.0 req/min ÷ service 在并发 16 的 14.0 req/min。两个峰值不在同一并发        |
+| ≈3.5×          | multiturn 峰值 82.7（并发 24）÷ 23.8（并发 8）                                                                                                            |
+| SLO            | 不是交互式标准：shared-prefix 为 90% TTFT ≤ 8 s，multiturn 为 90% TTFT ≤ 4 s，由空闲时未命中 TTFT（6.7 s / 3.3 s）加余量得出                              |
+
+还有两个值得记住的细节：control 负载的中位 TTFT 两边无差别（6.92 s vs 6.83 s），但 p95 从 21.46 s 降到 12.33 s，作者推测来自预测里也用了 vLLM 队列长度；而 service 一侧在所有测过的并发下都没有达到 SLO。
+
+**这些是 Buoyant 自测、3 个 GPU、一个模型的结果。** 它们说明了缓存亲和在长前缀负载上的量级，但不是任意集群的承诺；作者自己也写了「原始数字不重要，比值才重要」。
+
+---
+
+## 2. 为什么轮询会浪费 prefix cache
+
+vLLM 的 prefix caching 以固定长度的 block 为单位复用 KV。一个 block 能不能复用，取决于它**以及它之前的全部 token** 是否与已缓存内容相同，所以 block 的标识是一条哈希链：
+
+```text
+tokens:  [ system prompt ............................ ][ user ...... ]
+blocks:  | B0 | B1 | B2 | ... | B124 |                 | B125 | ... |  partial (不缓存)
+hash:    h0=H(0,B0)  h1=H(h0,B1)  h2=H(h1,B2) ...  h124=H(h123,B124)  h125=H(h124,B125) ...
+
+worker 的缓存里只要 h0..h124 都在，这次 prefill 只需算 B125 之后的部分。
+第一个缺失的 block 之后，哪怕后面的哈希碰巧还在，也全部作废。
+```
+
+把 N 个 worker 当成无状态副本轮询时，每个热门前缀都要在每一个 worker 上各算一遍；更糟的是，每个 worker 都得为全部前缀腾地方，总工作集超过单卡缓存就开始互相驱逐。前缀感知路由的价值，是让「同一前缀尽量落到同一张卡」，把集群缓存从 N 份重复副本变成接近 N 倍容量的分区。
+
+但只看前缀会出另一个问题：热门前缀会把流量全部吸到同一张卡上。Kinference 的做法不是「命中最多的赢」，而是把命中和负载折算成同一个单位——预测的 TTFT 毫秒数。
+
+---
+
+## 3. Kinference 的一次 pick：从 token 到 PredictedTTFT
+
+以下基于 2026-11-06 03:11 PST 的提交 `be2a7ad`（`git clone --depth 1`）。README 开头就说明了它的定位：它本身不转发流量，而是暴露一个 gRPC 接口，**输入请求、返回该去的端点和（可能改写后的）body**，需要和网关配对使用（例如 Buoyant Gateway）；KV 事件处理用的是 NVIDIA Dynamo 的 `dynamo-kv-router` crate。
+
+### 3.1 五个步骤与状态来源
+
+`docs/request-flow.md` 把 `pick_and_record` 拆成 Parse → Resolve model → Score → Select → Commit 五步。和路由质量直接相关的是这几件事：
+
+| 环节     | 仓库里的做法                                                                                                                                                               |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 分词     | 每个 profile 选 `render`（调 vLLM 的 `/v1/chat/completions/render`，默认）、`local`（进程内 `tokenizers` + `minijinja`）或 `compare`（以 render 为准、本地并跑并计数分歧） |
+| 前缀匹配 | 按 worker set 的 `kvBlockSize` 把 token 切块算哈希，在每个 pool 一棵的 radix tree 里查每个 worker 的匹配块数                                                               |
+| 索引来源 | 每个 worker 一个 ZMQ SUB socket 收 vLLM 的 KV 事件，一个 DEALER socket 在序号出现空洞时请求 replay                                                                         |
+| 负载     | 周期性抓取 vLLM `/metrics`（队列、运行数、KV 使用率、完成速率）                                                                                                            |
+| 在途补偿 | Commit 时把这次请求的前缀记为 dispatched，「让下一次 pick 在引擎事件到达前就给这个 worker 记上」                                                                           |
+| 闭环     | 网关回报首 token 和末 token；回报释放在途状态，并记录预测值与实测值，供调参                                                                                                |
+| 退化     | 分词全部失败时只按负载选；前缀索引出错也退化为 load-only                                                                                                                   |
+
+另外两条不变量对排障很重要：worker 的身份是 pod UID 的哈希，**pod 重启就是一个缓存为空的新 worker**；worker 上报的 block size 与 pool 不一致时，ingest 任务会请求把它驱逐。
+
+### 3.2 预测公式：真实代码
+
+打分在 `crates/kinference-router/src/picker.rs`，注释写明「Pure arithmetic, no I/O」。总预测是六项相加：
+
+```rust
+impl WaitPrediction {
+    pub fn total_ms(&self) -> f32 {
+        self.base_ms
+            + self.q_ms
+            + self.prefill_ms
+            + self.cache_ms
+            + self.q_running_ms
+            + self.decode_contention_ms
+    }
+}
+```
+
+其中 prefill 不是线性的，而是带注意力项的二次式：
+
+```rust
+/// prefill_ms = a × n_uncached + c × n_uncached × n_total
+pub fn prefill_ms_for(predictor: &PredictorConfig, uncached: u32, total: u32) -> f32 {
+    let u = uncached as f32;
+    let t = total as f32;
+    predictor.attention_uncached_block_ms * u
+        + predictor.attention_uncached_per_every_block_ms * u * t
+}
+```
+
+这里 `u`、`t` 的单位是 **block** 而不是 token。`predicted_wait_ms` 用 `total_blocks - matched_blocks` 作为未命中块数：
+
+```rust
+    let uncached_blocks = w.total_blocks.saturating_sub(w.matched_blocks);
+    let prefill_ms = prefill_ms_for(predictor, uncached_blocks, w.total_blocks);
+
+    let cache_ms = predictor.cache_pressure_penalty_ms * w.kv_cache_usage;
+
+    // Picks on this worker not yet visible in scraped metrics; see
+    // `q_running_penalty_ms`.
+    let q_inflight = inflight_summaries.len() as u32;
+    let q_running_ms = q_running_penalty_ms(w.queue_running, q_inflight, predictor);
+
+    // Includes just-dispatched requests, like the U-shape penalty.
+    let effective_qr = w.queue_running.saturating_add(q_inflight) as f32;
+    let decode_contention_ms = effective_qr * predictor.forward_pass_ms;
+```
+
+队列项 `q_ms` 不是「队列长度 × 常数」那么简单。`compute_queue_cost` 对**自己派出去、还没看到首 token** 的每个请求，按「已过去时间 / 估计 prefill 时间」算进度，只计剩余部分；超过 `inflight_concurrent_capacity` 的、或者 worker 已经报告有排队的，按全额 prefill 计；再加上引擎报告在排队、但不是自己派的那部分（`unknown_q_count`）按每条固定毫秒计：
+
+```rust
+    let unknown_q_count = w.queue_waiting.saturating_sub(inflight_count);
+
+    // A nonzero queue means the batch is at capacity, so treat every
+    // inflight as not yet admitted.
+    let capacity = if w.queue_waiting > 0 {
+        0
+    } else {
+        predictor.inflight_concurrent_capacity
+    };
+    ...
+        let (_progress, discount) =
+            inflight_discount(position, capacity, elapsed_ms, estimated_prefill_ms);
+        position_cost_ms += discount * estimated_prefill_ms;
+    ...
+    let unknown_cost_ms = unknown_q_count as f32 * q_rate_ms_per_entry;
+```
+
+`q_running_ms` 是一个「帐篷形」惩罚：运行中请求数为 0 时为 0，在 `peak_qr` 处达到峰值，到 `falloff_qr` 回到 0。代码注释的解释是：只有一两个请求在跑时，新 prefill 要和它们争 GPU 却并不进 batch；五个以上时「几乎免费地搭车」。这条是作者在自己机器上观测出来的经验形状，注释里写的是「calibrated against the observed slow-mode mean-TTFT delta」。
+
+### 3.3 代码默认值和 Helm 默认值不一样
+
+同一组参数在 `profile.rs` 的 serde 默认值与 `charts/kinference/values.yaml` 的 `default` profile 里不同，部署时以 chart 为准：
+
+| 参数                                        | `profile.rs` 默认 | Helm `values.yaml` | 作用                   |
+| ------------------------------------------- | ----------------: | -----------------: | ---------------------- |
+| `base_ms`                                   |               400 |                400 | 每请求固定截距         |
+| `queue_ms_per_entry`                        |              1000 |                0.2 | 未知排队条目的单价     |
+| `attention_uncached_block_ms` (a)           |               2.3 |                2.3 | 每未命中块线性项       |
+| `attention_uncached_per_every_block_ms` (c) |             0.009 |               0.03 | 注意力二次项           |
+| `q_running_penalty_peak_ms`                 |               700 |          0（关闭） | 帐篷惩罚               |
+| `forward_pass_ms`                           |         0（关闭） |                  5 | 每个并行 decode 的代价 |
+| `top_k_min` / `top_k_fraction`              |           2 / 0.2 |            1 / 0.0 | chart 下为纯 argmin    |
+| `tie_tolerance_ms`                          |                50 |                  0 | 视为平局的容差         |
+| `replication_threshold_pct`                 |         0（关闭） |                 10 | 热前缀复制，见下       |
+
+`values.yaml` 注释写的是「Starting points; refit from this profile's observation events」，即这些系数需要用自己集群的观测事件重新拟合。
+
+### 3.4 选择：top-K、在途数平局、热前缀复制
+
+`pick_endpoint` 先按预测值排序，取 `max(top_k_min, ceil(n × top_k_fraction))` 个以及在截止线 `max(第 K 名, 最优 + tie_tolerance_ms)` 内的全部，**再在其中只保留在途数最少的，最后均匀随机**。注释说明这是为了防止「冷启动时预测全相同，把所有请求都送给第一个 worker」。
+
+更直接针对热点的是 `cache_replication_override`。它只在全部条件成立时把选择换到一个冷 worker：功能开启；原选择已经「warm」（radix tree 匹配不少于 `replication_warm_threshold_fraction` 的块，默认 0.5）；warm 的 worker 少于 `replication_warm_target`（默认 2）；存在既不 warm 也不在预热中的候选；且这个候选的预测值不超过最优值的 `1 + replication_threshold_pct/100`。Helm 默认开启为 10%：
+
+```rust
+    let extra_cost = cand_ms - best_ms;
+    // `replication_threshold_pct` is in percentage points.
+    let max_extra = best_ms.max(0.0) * (picker.replication_threshold_pct / 100.0);
+    if extra_cost > max_extra {
+        return chosen_idx;
+    }
+```
+
+也就是说，即使按预测值应该继续走热卡，只要「多付的代价不超过 10%」，它会主动把前缀播种到第二张卡。本文第 7 节的热点负载，正是这个机制想避免的场景。
+
+另一个函数 `compute_layered_overlap` 处理「在途但还没写进缓存的前缀」：把每个在途请求当作一层，按新旧乘衰减系数 α，只累计每层超出更新层的部分；α = 1（默认）时退化为「所有来源里最长的匹配」。
+
+---
+
+## 4. InferencePolicy：consider / exclude / select / onEmpty
+
+### 4.1 CRD 里的语义
+
+Schema 在 `charts/kinference-crds/templates/kinference.buoyant.io_inferencepolicies.yaml`。规则级的描述是「The first rule to match wins」，`matches` 中「同一条目内 AND、条目之间 OR；没有 matches 的规则匹配一切，必须放在最后」。`route` 下四个字段的原文定义（节选）：
+
+```yaml
+consider:
+  description: |-
+    The full set of endpoints to consider. Leave blank
+    to simply use all known endpoints that provide the
+    model named in the request (including via aliases).
+
+    This field can be used to add models not named in
+    the request, including as a weighted choice.
+exclude:
+  description: |-
+    Endpoints to exclude from consideration.
+    Order-independent. Two exclusions express OR, one
+    exclusion with two fields expresses AND.
+select:
+  description: |-
+    Which endpoint to choose, after consideration and
+    exclusion. This is in ordered tiers; the first with
+    a surviving candidate wins outright.  If an
+    objective is specified, it must defined for every
+    candidate in its tier. For example, PredictedTTFT is
+    Local-only, so a tier spanning both Local and
+    Provider types cannot use it.
+onEmpty:
+  type: string
+  enum: [Reject, FallThrough]
+  default: Reject
+```
+
+`spec.unmatched` 则是 `enum: [ServeLocal, Reject]`，默认 `ServeLocal`，决定没有任何规则命中时怎么办。`exclude[].drop` 可以按 `contextWindow`、`predictedTTFT`、`prefixCacheHitRatio`、`queuedPrompts`、`kvCacheUsage`、`model.name`，以及 `backend.type/name/readyEndpoints/observedTTFTP95/budgetExhausted` 剔除候选。每个 select tier 必须恰好用 `minimize`（`PredictedTTFT` 或 `EstimatedTTFT`）或 `order` 之一排序，CRD 用 CEL 规则强制「PredictedTTFT is Local-only」。
+
+### 4.2 引擎怎样执行
+
+`crates/kinference-policy/src/engine.rs` 的 `evaluate` 依次做四件事：内置的上下文窗口适配（prompt + `max_tokens` 超过端点窗口的直接剔除）、作者写的 exclusions、有序 select tiers、tieBreak。exclude 的实现就是集合减法，`if` 守卫不匹配时整条 exclusion 跳过：
+
+```rust
+    for ex in &route.exclude {
+        // A guard that doesn't match skips the whole exclusion.
+        if let Some(guard) = &ex.if_
+            && !guard.matches(attrs)
+        {
+            continue;
+        }
+        ...
+    }
+    if survivors.is_empty() {
+        return Outcome::Empty { trace };
+    }
+
+    // --- select: ordered tiers, first with a survivor wins outright ------
+```
+
+`Outcome::Empty` 之后由调用方处理：`onEmpty: Reject` 直接拒绝，`FallThrough` 则继续尝试下一条匹配的规则（模块注释里的伪代码）。编译期还会给出警告：匹配一切、又不是 `onEmpty: FallThrough` 的规则会让后面的规则永远不可达；没有 `backends` 子集的 tier 总有幸存者，其后的 tier 不可达；对本地端点用 `order` 排序且没有 `tieBreak: [Random]` 时，「the same endpoint wins every time, so one pod takes all of this tier's traffic」。
+
+### 4.3 三个官方 YAML 分别表达什么
+
+**按复杂度降级到便宜模型，但仍比较缓存**（博客原文）：
+
+```yaml
+rules:
+  - name: low-complexity-consider-qwen
+    matches:
+      - model: glm-5.3
+        tag: complexity-low
+    route:
+      consider:
+        - models: { names: [qwen-3.6-27b, glm-5.3] }
+      select: [{ minimize: PredictedTTFT }]
+```
+
+`consider` 把客户端没点名的 `qwen-3.6-27b` 加入候选，两个模型的所有本地 worker 放在同一个 PredictedTTFT 下比较。意义在于：如果 glm-5.3 某张卡已经缓存了整段对话，「降级」反而要冷启动重算，未必更快。
+
+**burst-to-cloud**（博客原文）：
+
+```yaml
+exclude:
+  - name: drop-overloaded-workers
+    drop:
+      backend: { type: Local }
+      queuedPrompts: { greaterThan: 2 }
+
+select:
+  - { type: Local, minimize: PredictedTTFT }
+  - { type: Provider, order: [bedrock, databricks] }
+```
+
+先把排队超过 2 的本地 worker 剔除；第一档在剩余本地 worker 里按预测 TTFT 选；只有本地全部被剔除时，第一档为空，才落到第二档按 bedrock → databricks 的顺序选外部提供方。
+
+**PII fail-closed**（博客原文）：
+
+```yaml
+exclude:
+  - name: pii-never-leaves-cluster
+    if: { tag: pii-detected }
+    drop: { backend: { type: Provider } }
+select:
+  - { type: Provider, order: [databricks] }
+  - { type: Local, minimize: PredictedTTFT }
+onEmpty: Reject # fail closed
+```
+
+带 `pii-detected` 标签的请求先失去所有 Provider 候选；如果本地也没有可用候选，`onEmpty: Reject` 拒绝请求，而不是退回到外部——这就是「fail closed」。
+
+### 4.4 读代码时发现的几处落差
+
+1. **请求 tag 目前没有来源。** CRD 对 `tag` 的描述原文：「Nothing sets tags on requests yet: the router sends an empty set, so a scalar, array or `containsAll` never matches and `{not: ...}` always matches.」`lifecycle.rs` 构造请求属性时也写着 `// Nothing produces tags yet.` 和 `tag: Vec::new()`。README 的 Known limitations 列出了尚未实现的 **Semantic classifiers**、Rate limiting、`/v1/messages` 和多副本。因此在这个提交上，第一和第三个示例里依赖 `complexity-low`、`pii-detected` 的部分不会生效：PII 示例的 `if` 守卫永远不匹配，exclusion 会被跳过。示例描述的是设计，不是当前可用的功能。
+2. **PII 示例的 tier 顺序。** 博客的文字说这是「在 GPU 池饱和时把请求 burst 到第三方」。但按 `evaluate` 的「first with a survivor wins outright」，这段 YAML 字面上把 Provider 放在第一档：没有 PII 标签、databricks 又没被剔除时，请求会直接选 databricks，而不会先看本地是否饱和。我没有部署运行这条策略，也没有看到 provider 健康度以外让它不存活的机制；这是我按代码语义对 YAML 字面的读法，可能是示例简化，不应当作已验证的线上行为。
+3. **第一个示例可能过不了 CRD 校验。** CRD 用 CEL 规则要求 `minimize: PredictedTTFT` 的 tier 要么自身限定 `type: Local`，要么 `consider` 的每一项都限定为 Local，报错信息是「PredictedTTFT is Local-only: constrain the tier or the candidate set to Local, or use EstimatedTTFT」。博客里的 `smart-semantic-routing` 两处都没有写 `type`。按规则字面，它应当在 apply 时被 API server 拒绝。我没有集群，也没能编译 `kinfctl` 来验证（仓库的 `rust-toolchain.toml` 要求 Rust 1.95.0，box 上只有 1.85.1），所以这一条只是对 schema 的阅读。
+4. **博客提到的 token rate limiting**，README 目前把 Rate limiting 列在缺失功能里。
+
+这些不影响 KV 感知负载均衡本身——那部分的代码完整、注释详尽——但如果要用 policy 层做合规隔离，目前不能依赖 `tag`（路由器传入的是空集合），只能改用 `tenant`、`model`、`qos` 等已有的请求属性，或等标签来源落地。
+
+---
+
+## 5. Go 实验：先把 mock 的假设全部摆出来
+
+**自己写的最小实现，非 Kinference 实现。** 没有用 Kinference 的代码，没有 GPU，没有 vLLM；三个组件都在一个 Go 进程里，但彼此之间走真实的 localhost HTTP 和 SSE 流式响应，TTFT 是客户端从发出请求到收到第一个内容 chunk 的时间。代码在 `kv-router-lab/`，只用标准库。
+
+```text
+  load generator (closed loop, C clients)
+        |  POST /v1/chat/completions  stream=true
+        v
+  +-------------------- router (reverse proxy) --------------------+
+  | render messages -> token-ish words -> 16-token blocks          |
+  | chained FNV-64 hashes -> per-worker table -> policy -> forward  |
+  | headers: X-Router-Backend, X-Router-Predicted-Cached           |
+  +------------+---------------+---------------+-------------------+
+               |               |               |      (events mode:
+               v               v               v       worker -> router
+          mock worker 0   mock worker 1  ... worker N-1   KV stored/removed)
+          [LRU 2500 blk]  [LRU 2500 blk]
+          4 slots + FIFO queue (64), serial prefill, parallel decode
+          final SSE chunk: usage.prompt_tokens_details.cached_tokens
+```
+
+### 5.1 mock worker 的全部参数
+
+| 参数       |                                             值 | 说明                                                                       |
+| ---------- | ---------------------------------------------: | -------------------------------------------------------------------------- |
+| token      |                     1 个空白分隔的词 = 1 token | 不是 BPE；路由器和 worker 默认用同一套渲染与切分                           |
+| block size |                                      16 tokens | 只有完整 block 可缓存，尾部不足一块的部分不缓存                            |
+| 缓存容量   |         2,500 blocks / worker（40,000 tokens） | block 粒度 LRU；写入时从尾到头 touch，使前缀头部最「新」，压力下先驱逐尾部 |
+| 前缀匹配   |                从第一个 block 起连续命中的块数 | 第一个缺失即停止                                                           |
+| prefill    |                    2 ms + 25 µs × 未命中 token | **每个 worker 同时只做一个 prefill**（互斥锁）                             |
+| decode     |         每个输出 token 1.5 ms（首 token 之后） | 32 个输出 token ≈ 46.5 ms；decode 之间互不干扰                             |
+| 并发       | 4 个运行槽位；槽位从排队到 decode 结束一直占用 | 等槽位的时间计入 TTFT                                                      |
+| 队列       |                     最多 64 个等待，超出回 429 | 本次所有运行都没有触发（err=0）                                            |
+
+空闲时实测（`calibration.txt`，单 worker、串行 20 次）：一次 2,066 token、完全未命中的请求 TTFT 中位 **54.99 ms**（p99 56.62 ms）；2,000 token 已缓存时中位 **5.04 ms**（p99 5.36 ms）。据此把 TTFT SLO 定为 **100 ms**，即未命中空闲值加约 80% 余量——和 Buoyant「空闲未命中 TTFT + padding」的选法同一思路，但数值毫无可比性。SLO 是在主实验之前写进参数默认值的。
+
+**这些数字只用来比较路由策略之间的相对差别，不代表任何真实 GPU 的 TTFT。** 真实 vLLM 有 chunked prefill、prefill 与 decode 混批、显存驱逐、调度器优先级，prefill 代价也不是线性的（Kinference 自己就用了二次项）。
+
+### 5.2 四种路由策略
+
+| 策略     | 选择规则                                                                                           |
+| -------- | -------------------------------------------------------------------------------------------------- |
+| `rr`     | 全局计数器轮询                                                                                     |
+| `least`  | 在途请求最少；平局随机                                                                             |
+| `prefix` | 路由表中匹配前缀最长；**完全不看负载**；平局取在途最少，再随机                                     |
+| `kv`     | 最小化 `未命中 token × 0.025 ms + 在途请求数 × 12.5 ms`；0.5 ms 内视为平局，平局取在途最少，再随机 |
+
+`kv` 的 0.025 ms/token 与 mock 的 prefill 斜率相同，等于路由器「完美校准」；12.5 ms 取的是「一次 decode 约 50 ms ÷ 4 个槽位」，表示每多一个在途请求大约多等的时间。这比 Kinference 的预测器简单得多：没有 base、没有二次项、没有按进度折算在途 prefill，也没有 top-K 和复制覆盖。
+
+路由表默认是 **shadow 模式**：派发时就把整条前缀记到目标 worker 名下（LRU，容量与 worker 相同），相当于 Kinference 的 dispatched 前缀补偿，但没有接 KV 事件。第 7.4 节的 events 模式改为只根据 worker 回传的 stored/removed 事件更新。
+
+### 5.3 三种负载与测量口径
+
+| 负载      | 形状                                                                                                        | 每请求输出 |
+| --------- | ----------------------------------------------------------------------------------------------------------- | ---------- |
+| shared    | 32 个 2,000 token 的 system prompt 均匀随机选一 + 64 个独有 token                                           | 32         |
+| multiturn | 每个客户端连续对话 8 轮：首轮 1,000 token 独有内容，此后每轮追加上一轮回复 + 100 个新 token；8 轮后换新对话 | 32         |
+| hot       | 同 shared 的 32 个前缀，但 **60% 请求用前缀 0、20% 用前缀 1**，其余 20% 均匀分给另外 30 个                  | 32         |
+
+32 个前缀约 4,000 个 block，大于单 worker 的 2,500 但小于 2 个或 4 个 worker 的总和——这是故意的：它让「复制到每张卡」放不下，而「分区」放得下。
+
+每次运行：闭环，**每个 worker 8 个客户端**（2 worker = 16，4 worker = 32），4 s 预热 + 15 s 测量；只统计在测量窗口内**开始**的请求；每个配置 3 次重复，偶数轮反转策略顺序。
+
+| 指标                       | 定义                                                                                                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| req/s                      | 测量窗口内开始且成功的请求数 / 15 s                                                                                                                                                   |
+| goodput/s                  | 测量窗口内开始、HTTP 200 且 TTFT ≤ 100 ms 的请求数 / **固定 15 s 墙钟**（不是请求时长之和，也不按提交完成时刻重开窗口）。失败请求不计入分子；本次全部 `err=0`，因此与「成功子集」一致 |
+| SLO %                      | 同上分子 / 测量窗口内开始的全部样本数（含非 200）；本次无失败，等价于成功请求中满足 SLO 的比例                                                                                        |
+| p50 / p99                  | 本轮全部成功请求 TTFT 的 nearest-rank 分位数                                                                                                                                          |
+| hit %                      | Σ worker 报告的 `cached_tokens` / Σ `prompt_tokens`（token 加权）                                                                                                                     |
+| overpredict %              | 路由器预测的缓存 token 数 **大于** worker 实际报告值的请求占比                                                                                                                        |
+| max share / avg q / peak q | 份额 = 该 worker 上成功请求数 / 本轮成功总数（仅 200）；max share 取各 worker 份额的最大值。avg q / peak q 为各 worker 等待队列时间平均值与峰值中的最大者                             |
+
+汇总表每列分别取 3 次的中位数，因此同一行的各列不一定来自同一次运行。
+
+---
+
+## 6. 关键代码
+
+### 6.1 链式 block 哈希与 LRU（`tokens.go`）
+
+```go
+// BlockHashes returns one hash per FULL block. Each hash chains the previous
+// one, so equal hash at position i implies the whole prefix [0, i] is equal.
+func BlockHashes(tokens []string, blockSize int) []uint64 {
+	n := len(tokens) / blockSize
+	out := make([]uint64, 0, n)
+	var prev uint64
+	var buf [8]byte
+	for i := 0; i < n; i++ {
+		h := fnv.New64a()
+		binary.LittleEndian.PutUint64(buf[:], prev)
+		h.Write(buf[:])
+		for _, t := range tokens[i*blockSize : (i+1)*blockSize] {
+			h.Write([]byte(t))
+			h.Write([]byte{0})
+		}
+		prev = h.Sum64()
+		out = append(out, prev)
+	}
+	return out
+}
+
+// MatchPrefix counts leading blocks present. Because hashes are chained,
+// the first miss ends the usable prefix even if later blocks are present.
+func (c *BlockLRU) MatchPrefix(hs []uint64) int {
+	n := 0
+	for _, h := range hs {
+		if _, ok := c.items[h]; !ok {
+			break
+		}
+		n++
+	}
+	return n
+}
+
+// Insert walks the prompt tail-first so the head blocks end up
+// most-recently-used: under pressure the tail is evicted before the shared head.
+func (c *BlockLRU) Insert(hs []uint64) (evicted []uint64) {
+	for i := len(hs) - 1; i >= 0; i-- {
+		h := hs[i]
+		if e, ok := c.items[h]; ok {
+			c.ll.MoveToFront(e)
+			continue
+		}
+		c.items[h] = c.ll.PushFront(h)
+		for c.ll.Len() > c.cap {
+			back := c.ll.Back()
+			old := back.Value.(uint64)
+			c.ll.Remove(back)
+			delete(c.items, old)
+			evicted = append(evicted, old)
+		}
+	}
+	return evicted
+}
+```
+
+LRU 写入方向是我踩到的第一个坑：若按从头到尾顺序 touch，前缀的第一个 block 反而最「旧」，最先被驱逐，而它一旦被驱逐，后面全部链式哈希都作废。
+
+### 6.2 mock worker 的 prefill（`backend.go`）
+
+```go
+	// Admission: bounded waiting queue, then a running slot.
+	if b.waiting.Load() >= int64(b.cfg.MaxWaiting) {
+		...
+		http.Error(w, "queue full", http.StatusTooManyRequests)
+		return
+	}
+	b.addWaiting(1)
+	b.slot <- struct{}{}
+	b.addWaiting(-1)
+	defer func() { <-b.slot }()
+
+	// Prefill: serial on this worker; cost ∝ uncached tokens.
+	b.prefillMu.Lock()
+	b.cacheMu.Lock()
+	matched := b.cache.MatchPrefix(hs)
+	b.cacheMu.Unlock()
+	cached := matched * b.cfg.BlockSize
+	uncached := len(toks) - cached
+	sleepMs(b.cfg.PrefillBaseMs + float64(uncached)*b.cfg.PrefillUsPerTok/1000)
+	b.cacheMu.Lock()
+	evicted := b.cache.Insert(hs)
+	b.cacheMu.Unlock()
+	b.prefillMu.Unlock()
+	if b.OnEvent != nil {
+		b.OnEvent(KVEvent{Stored: hs, Removed: evicted})
+	}
+```
+
+之后逐 token 写出 SSE chunk 并 `Flush`，最后一个 chunk 带 `usage.prompt_tokens_details.cached_tokens`，然后 `data: [DONE]`。命中是在**真正开始 prefill 时**判定的，不是到达时——排队期间缓存可能已经被别的请求填上或驱逐。
+
+### 6.3 路由打分（`router.go`）
+
+```go
+func (r *Router) pick(nTok int, hs []uint64) (int, int) {
+	n := len(r.targets)
+	match := make([]int, n)
+	for i := range n {
+		match[i] = r.matched(i, hs)
+	}
+	switch r.cfg.Policy {
+	case "rr":
+		i := r.rr % n
+		r.rr++
+		return i, match[i] * r.cfg.BlockSize
+	case "least":
+		return r.argmin(func(i int) float64 { return float64(r.inflight[i]) }, 0), 0
+	case "prefix": // longest cached prefix wins; load is ignored entirely
+		i := r.argmin(func(i int) float64 { return -float64(match[i]) }, 0)
+		return i, match[i] * r.cfg.BlockSize
+	case "kv":
+		i := r.argmin(func(i int) float64 {
+			uncached := nTok - match[i]*r.cfg.BlockSize
+			return float64(uncached)*r.cfg.PrefillMsTok + float64(r.inflight[i])*r.cfg.QueueCostMs
+		}, r.cfg.TieToleranceMs)
+		return i, match[i] * r.cfg.BlockSize
+	}
+	panic("unknown policy " + r.cfg.Policy)
+}
+```
+
+`ServeHTTP` 在同一把锁里完成 `pick`、`inflight[i]++` 和 shadow 表写入，然后转发并逐块 `Flush` 流式响应，结束时 `inflight[i]--`。在途数在整个请求结束时才释放（Kinference 在首 token 回报时释放），因为 mock 的槽位要占到 decode 结束。
+
+以 2,066 token 的 shared 请求为例：在已缓存 2,000 token 的 worker 上得分约 `66 × 0.025 + inflight × 12.5`，冷 worker 约 `51.65 + inflight × 12.5`。也就是说，**热 worker 要比冷 worker 多约 4 个在途请求，`kv` 才会把这个前缀溢出到别处**；溢出之后冷 worker 也被记上这条前缀，热门前缀就有了第二份副本。
+
+### 6.4 测试与构建
+
+`lab_test.go` 覆盖：共享前缀的块哈希相同、分叉后不同、同内容不同位置哈希不同；LRU 不先驱逐头部；匹配在第一个缺失处停止；`prefix` 策略在在途 100 时仍坚持热 worker、`kv` 在在途 1 时留下而在途 3 时溢出、`rr` 交替；渲染模板不同时所有块哈希都不同。
+
+```bash
+cd /workspace/blog/kv-router-lab
+go test -v ./... && go test -race ./... && go vet ./...
+./run.sh   # calibrate -> main (72 runs) -> pitfalls (30 runs)
+python3 summarize.py
+```
+
+`verification.txt` 记录 5 个测试全部 PASS，`-race` 与 `vet` 通过。
+
+---
+
+## 7. 实际运行结果
+
+### 7.1 环境
+
+运行时间 **2026-11-08 21:19–21:51 PST（America/Los_Angeles）**（box 的系统时区显示为 CST，即 UTC+8 的 11-09 13:19–13:51，已换算）。共享虚拟机，负载可能变化，不是独占硬件。
+
+| 项目     | 实际环境                                                                                       |
+| -------- | ---------------------------------------------------------------------------------------------- |
+| OS / CPU | Linux 6.12.94+ x86_64，8 个逻辑 CPU，`Intel(R) Xeon(R) Processor`                              |
+| 内存     | 15 GiB，记录时 available 约 2.6 GiB                                                            |
+| Go       | go1.27.3 linux/amd64，`GOMAXPROCS=8`                                                           |
+| 规模     | 主实验 3 负载 × 2 与 4 worker × 4 策略 × 3 次 = 72 轮；坑位实验 2 负载 × 5 变体 × 3 次 = 30 轮 |
+| 结果     | 所有轮次 `err=0`，没有 429                                                                     |
+
+正式运行前另跑过一次 6 s 测量窗口的单次冒烟（4 worker），用于确认程序工作，**未保存、不计入统计**。
+
+### 7.2 主实验汇总（3 次中位数）
+
+| 负载      |   N | 策略   |  req/s | goodput/s | SLO % | p50 ms | p99 ms | hit % | max share % | max avg q | max peak q |
+| --------- | --: | ------ | -----: | --------: | ----: | -----: | -----: | ----: | ----------: | --------: | ---------: |
+| shared    |   2 | rr     |  66.33 |     14.60 | 22.01 | 165.65 | 370.36 | 59.00 |       50.05 |      5.06 |         10 |
+| shared    |   2 | least  |  66.27 |      5.07 |  7.63 | 172.97 | 296.72 | 58.57 |       50.10 |      3.93 |          4 |
+| shared    |   2 | prefix | 103.40 |     58.20 | 56.29 |  82.53 | 209.50 | 96.72 |       52.34 |      6.49 |         12 |
+| shared    |   2 | kv     |  98.27 |     62.07 | 63.16 |  83.69 | 183.43 | 90.05 |       50.48 |      4.00 |          6 |
+| shared    |   4 | rr     | 129.13 |     44.87 | 34.76 | 152.77 | 516.53 | 58.08 |       25.01 |      9.89 |         16 |
+| shared    |   4 | least  | 132.93 |     10.13 |  7.62 | 172.66 | 315.84 | 57.96 |       25.36 |      3.93 |          4 |
+| shared    |   4 | prefix | 201.33 |    130.27 | 65.47 |  68.10 | 352.88 | 96.81 |       28.18 |     10.85 |         22 |
+| shared    |   4 | kv     | 223.27 |    195.73 | 88.12 |  74.86 | 131.31 | 96.04 |       25.21 |      4.01 |          7 |
+| multiturn |   2 | rr     |  89.33 |     40.13 | 44.99 | 110.07 | 211.22 | 68.60 |       50.00 |      5.89 |          9 |
+| multiturn |   2 | least  |  94.60 |     57.40 | 60.42 |  83.97 | 188.33 | 77.12 |       50.04 |      3.94 |          4 |
+| multiturn |   2 | prefix | 100.87 |     83.07 | 82.41 |  81.57 | 159.40 | 83.53 |       50.03 |      3.94 |          4 |
+| multiturn |   2 | kv     | 100.67 |     83.13 | 82.58 |  81.67 | 159.03 | 83.56 |       50.00 |      3.94 |          4 |
+| multiturn |   4 | rr     | 149.60 |     54.67 | 36.66 | 140.59 | 357.23 | 46.34 |       25.00 |      7.26 |         14 |
+| multiturn |   4 | least  | 183.80 |     79.87 | 43.45 | 103.71 | 188.44 | 71.83 |       25.37 |      3.95 |          4 |
+| multiturn |   4 | prefix | 205.93 |    166.73 | 81.52 |  79.96 | 159.47 | 83.01 |       25.04 |      3.96 |          5 |
+| multiturn |   4 | kv     | 206.93 |    168.67 | 82.12 |  79.82 | 157.63 | 83.04 |       25.13 |      3.96 |          5 |
+| hot       |   2 | rr     |  93.93 |     47.80 | 50.53 |  96.74 | 254.29 | 87.32 |       50.04 |      5.86 |         10 |
+| hot       |   2 | least  |  93.47 |     54.87 | 58.70 |  79.32 | 222.37 | 87.04 |       50.40 |      3.95 |          4 |
+| hot       |   2 | prefix |  86.53 |     33.47 | 37.89 | 144.77 | 224.14 | 91.86 |       63.10 |      8.69 |         12 |
+| hot       |   2 | kv     | 105.93 |     91.47 | 86.67 |  77.25 | 131.32 | 94.46 |       50.09 |      3.97 |          6 |
+| hot       |   4 | rr     | 188.27 |    113.87 | 60.80 |  67.66 | 355.74 | 87.10 |       25.03 |      6.64 |         17 |
+| hot       |   4 | least  | 192.13 |    111.73 | 58.15 |  77.49 | 199.74 | 86.47 |       25.28 |      3.94 |          4 |
+| hot       |   4 | prefix |  91.73 |     36.87 | 40.19 | 441.53 | 517.92 | 96.74 |       59.81 |     24.75 |         28 |
+| hot       |   4 | kv     | 225.60 |    217.60 | 96.45 |  74.74 | 117.06 | 96.66 |       25.06 |      4.05 |          7 |
+
+几组对比（都取上表中位数）：
+
+- **shared，4 worker**：`kv` goodput 195.73/s，是 `rr`（44.87）的 4.36×、`prefix`（130.27）的 1.50×；`least` 只有 10.13。`kv` 与 `prefix` 命中率几乎一样（96.04% vs 96.81%），差别在 p99：131.31 ms 对 352.88 ms。这些都是**同一闭环并发**（每 worker 8 客户端）、同一 mock 参数下的策略对比，不是开环到达过程，也不能外推真实 vLLM / Kinference。
+- **multiturn，4 worker**：`kv` 168.67/s 与 `prefix` 166.73/s 在重复间波动范围内，`rr` 54.67/s。命中率上限约 83%，因为每段对话首轮 1,000 token 和每轮新增内容都必然未命中。
+- **hot，4 worker**：`prefix` 是**命中率最高之一（96.74%）却最差的策略**：goodput 36.87/s，p99 517.92 ms，还不到 `kv`（217.60/s，p99 117.06 ms）的 1/5，也明显低于 `rr`（113.87/s）。
+- **2 worker** 时差距都更小。shared 下 `kv` 62.07 vs `prefix` 58.20；`kv` 的命中率反而低（90.05% vs 96.72%），它用一部分命中换来了均衡，p99 从 209.50 降到 183.43 ms。
+
+### 7.3 热点负载：逐 worker 看 `prefix` 怎样把一张卡压垮
+
+hot / 4 worker / 第 1 次重复，各 worker 的请求份额、等待队列时间平均值与峰值、该 worker 上请求的 p99 TTFT：
+
+| 策略     | w0                               | w1                     | w2                          | w3                    |
+| -------- | -------------------------------- | ---------------------- | --------------------------- | --------------------- |
+| `rr`     | 25.0%，q̄ 10.60，峰 18，p99 433.8 | 25.0%，2.94，10，214.6 | 25.0%，1.53，7，172.0       | 25.0%，1.07，7，145.4 |
+| `prefix` | 8.2%，0.00，1，6.0               | 24.5%，0.06，4，66.6   | **58.4%，24.53，28，520.7** | 8.9%，0.00，1，32.9   |
+| `kv`     | 24.9%，3.88，7，119.5            | 25.1%，3.82，6，92.7   | 25.1%，4.19，6，123.7       | 25.0%，3.87，6，114.5 |
+
+`prefix` 把 60% 流量的热门前缀固定在 w2 上：等待队列长期约 24.5，峰值 28；另外三个 worker 几乎空闲，其中 w0 的 p99 只有 6.0 ms。3 次重复中热 worker 的份额分别是 58.4%、59.8%、61.6%，即热门前缀本身的流量比例。因为是闭环（共 32 个客户端），队列上限被客户端数封顶；**开环到达时它会无界增长**，这里的 517.92 ms 反而是乐观的。
+
+`kv` 下 4 个 worker 份额都在 25% ± 0.2%，平均等待都约 4——在途差超过 4 个请求后热门前缀就被复制出去，此后它在两张以上的卡上都是热的，命中率仍有 96.66%。`rr` 份额虽然均等，平均队列却在 1.07 到 10.60 之间：份额均等不等于工作量均等，未命中的请求要多占约 50 ms 的串行 prefill。
+
+全部 9 行原始输出（`policy,rep,req_s,goodput_s,p99_ms,hit_pct | per-backend`）：
+
+```text
+rr,1,187.27,113.87,388.68,87.10 | b0:share=25.0%,avgq=10.60,peakq=18,p99=433.8 b1:share=25.0%,avgq=2.94,peakq=10,p99=214.6 b2:share=25.0%,avgq=1.53,peakq=7,p99=172.0 b3:share=25.0%,avgq=1.07,peakq=7,p99=145.4
+prefix,1,93.60,38.93,517.92,96.74 | b0:share=8.2%,avgq=0.00,peakq=1,p99=6.0 b1:share=24.5%,avgq=0.06,peakq=4,p99=66.6 b2:share=58.4%,avgq=24.53,peakq=28,p99=520.7 b3:share=8.9%,avgq=0.00,peakq=1,p99=32.9
+kv,1,224.80,215.00,118.24,96.69 | b0:share=24.9%,avgq=3.88,peakq=7,p99=119.5 b1:share=25.1%,avgq=3.82,peakq=6,p99=92.7 b2:share=25.1%,avgq=4.19,peakq=6,p99=123.7 b3:share=25.0%,avgq=3.87,peakq=6,p99=114.5
+kv,2,225.60,217.60,114.99,96.66 | b0:share=25.0%,avgq=4.00,peakq=6,p99=120.3 b1:share=25.0%,avgq=3.82,peakq=6,p99=118.6 b2:share=24.9%,avgq=3.88,peakq=5,p99=112.1 b3:share=25.1%,avgq=4.05,peakq=7,p99=110.9
+prefix,2,91.73,36.87,516.48,96.74 | b0:share=8.6%,avgq=0.00,peakq=1,p99=36.2 b1:share=59.8%,avgq=24.75,peakq=28,p99=519.4 b2:share=8.4%,avgq=0.00,peakq=1,p99=9.0 b3:share=23.2%,avgq=0.01,peakq=2,p99=16.2
+rr,2,188.27,114.73,355.74,86.44 | b0:share=25.0%,avgq=6.08,peakq=17,p99=376.2 b1:share=25.0%,avgq=1.78,peakq=8,p99=191.1 b2:share=25.0%,avgq=1.48,peakq=9,p99=177.0 b3:share=25.0%,avgq=6.64,peakq=14,p99=306.8
+rr,3,192.60,98.13,248.22,87.31 | b0:share=25.0%,avgq=4.20,peakq=11,p99=234.7 b1:share=25.0%,avgq=2.96,peakq=11,p99=193.9 b2:share=25.0%,avgq=6.32,peakq=12,p99=289.2 b3:share=25.0%,avgq=2.42,peakq=9,p99=177.5
+prefix,3,89.13,34.27,518.49,96.52 | b0:share=22.8%,avgq=0.01,peakq=2,p99=21.3 b1:share=7.6%,avgq=0.00,peakq=1,p99=51.5 b2:share=61.6%,avgq=24.94,peakq=28,p99=519.4 b3:share=8.0%,avgq=0.00,peakq=1,p99=54.3
+kv,3,226.07,218.27,117.06,96.63 | b0:share=25.1%,avgq=3.95,peakq=6,p99=107.6 b1:share=24.8%,avgq=3.81,peakq=7,p99=128.8 b2:share=25.0%,avgq=4.03,peakq=7,p99=117.4 b3:share=25.1%,avgq=3.95,peakq=7,p99=107.9
+```
+
+### 7.4 坑位实验：表陈旧、事件延迟、分词不一致
+
+都是 4 worker、`kv` 策略、3 次中位数：
+
+| 负载   | 变体                    |  req/s | goodput/s | SLO % | p50 ms | p99 ms | hit % | overpredict % |
+| ------ | ----------------------- | -----: | --------: | ----: | -----: | -----: | ----: | ------------: |
+| shared | `kv-shadow`             | 223.67 |    200.33 | 89.54 |  74.82 | 128.25 | 96.17 |          0.00 |
+| shared | `kv-events`             | 224.20 |    203.00 | 90.70 |  74.79 | 128.62 | 96.11 |          0.36 |
+| shared | `kv-events-delay200ms`  | 225.40 |    202.73 | 89.41 |  74.39 | 130.04 | 95.85 |          0.92 |
+| shared | `kv-events-tokmismatch` | 130.80 |     10.67 |  8.21 | 173.62 | 317.17 | 56.37 |          0.00 |
+| shared | `kv-shadow-table4x`     | 216.93 |    178.73 | 82.39 |  75.73 | 156.77 | 94.53 |          2.70 |
+| hot    | `kv-shadow`             | 227.13 |    216.33 | 95.31 |  74.19 | 118.42 | 96.69 |          0.00 |
+| hot    | `kv-events`             | 225.67 |    218.20 | 96.69 |  74.76 | 115.95 | 96.75 |          0.00 |
+| hot    | `kv-events-delay200ms`  | 228.87 |    221.13 | 97.05 |  73.84 | 111.69 | 96.73 |          0.09 |
+| hot    | `kv-events-tokmismatch` | 192.53 |    111.67 | 58.00 |  77.75 | 178.78 | 87.07 |          0.00 |
+| hot    | `kv-shadow-table4x`     | 225.33 |    213.80 | 94.88 |  74.65 | 124.01 | 96.57 |          0.21 |
+
+变体含义：
+
+| 变体                    | 路由表怎样更新                                                                                                                                                                                                                                     |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kv-shadow`             | 与主实验相同：派发时就记账（这一组是单独重跑的对照）                                                                                                                                                                                               |
+| `kv-events`             | 只根据 worker 回传的 stored/removed 事件更新，**没有**派发时的预先记账                                                                                                                                                                             |
+| `kv-events-delay200ms`  | 同上，但每个事件晚 200 ms 生效                                                                                                                                                                                                                     |
+| `kv-events-tokmismatch` | 事件模式，且路由器用另一套聊天模板渲染（`<s> [role]` 而不是 `<\|role\|>`），worker 仍用默认模板。两边切出的 token 序列从第一个 block 起就不同，因此事件表里的哈希与路由器查询哈希永不匹配——**模拟的是路由器与引擎分词/模板不一致**，不是随机改哈希 |
+| `kv-shadow-table4x`     | shadow 模式，但路由表容量设为 worker 实际容量的 4 倍：路由器以为已被驱逐的块还在                                                                                                                                                                   |
+
+**分词/模板不一致是最致命的。** shared 下 goodput 从 200.33/s 跌到 10.67/s，命中率 56.37%——和主实验里不看前缀的 `least`（10.13/s，57.96%）几乎一样。原因很直接：第一个 block 的哈希就不同，后面整条链全部不同，路由器在事件表里永远查不到任何匹配，所有 worker 的「未命中 token」都相同，打分只剩在途项，于是退化成最少在途。没有报错、也没有 overpredict（预测命中恒为 0），**只有命中率悄悄掉下去**。值得注意的是，如果路由表是 shadow 模式（用路由器自己的哈希记账），同样的模板差异不会显现，因为路由器与自己是一致的；只有当索引来自引擎事件——这正是 Kinference 的做法——两边的分词必须逐 token 一致。Kinference 为此默认用 vLLM 的 `/render` 分词，`TokenizeMode` 的文档要求先跑 `compare` 观察 `kinference_tokenize_compare_total{result="divergence"}` 保持为零，再切 `local`，并写明「otherwise prefix-cache routing is silently wrong」。
+
+**路由表比实际缓存「乐观」会有代价，但温和。** 表容量 4× 时 shared 的 goodput 从 200.33 降到 178.73/s（−10.8%），p99 从 128.25 升到 156.77 ms，2.70% 的请求被预测命中但实际没命中。hot 下几乎无影响（213.80 vs 216.33），因为热门前缀一直被访问，不会被驱逐。shadow 模式的根本问题是它从不知道真实驱逐；Kinference 订阅 KV 事件并在序号空洞时 replay，就是为了避免这种漂移。
+
+**事件延迟和缺少预先记账，在这组负载里几乎没有影响**（200 ms 延迟下 goodput 202.73 vs 203.00，overpredict 0.92%）。这不是说它们不重要，而是本实验的 32 个前缀是固定的，在 4 s 预热期就已分布好，测量窗口里没有「新前缀突然到来」的时刻。真正暴露问题的是冷启动或新前缀的突发：在事件到达前，同一前缀的一串请求在所有 worker 上都显示未命中，会被打散到多张卡上各算一遍。Kinference 的 dispatched 前缀记账和 `compute_layered_overlap` 针对的就是这个窗口。**我没有构造这种突发负载，所以没有数据支撑它的量级。**
+
+---
+
+## 8. 怎样解释这组结果，才不把 mock 写成宣传
+
+### 8.1 命中率不是目标函数
+
+hot 负载最清楚地说明了这一点：`prefix` 的命中率 96.74%，与 `kv` 的 96.66% 几乎相同，goodput 却只有后者的 1/5.9。缓存亲和省下的是 prefill，但 TTFT 还包括排队；只有把两者折算成同一单位（Kinference 用的是预测毫秒数），路由器才能判断「在热卡上排队」与「去冷卡上重算」哪个更便宜。反过来，2 worker 的 shared 里 `kv` 主动放弃了约 7 个百分点的命中率，换来更低的 p99。
+
+### 8.2 为什么 `least` 在 shared 上甚至比 `rr` 差
+
+`least` 和 `rr` 一样不看前缀，命中率都约 58%：每个 worker 都要为全部 32 个前缀（约 4,000 block）腾 2,500 block 的空间。`least` 的 goodput 却只有 `rr` 的约 1/4（4 worker：10.13 vs 44.87）到 1/3（2 worker：5.07 vs 14.60）。从队列数据看，`least` 让每个 worker 恒定保持约 3.93 个等待（闭环下 8 个客户端对 4 个槽位），TTFT 中位约 172 ms，几乎全部落在 100 ms SLO 之外；`rr` 的队列在 worker 之间更不均匀，部分请求落到短队列上。**这是我根据队列统计的推测，没有做逐请求归因。**
+
+### 8.3 p50 在 75 ms 附近，是闭环并发的选择造成的
+
+即使命中率 96%，`kv` 的 p50 仍约 75 ms，远高于空闲时的 5 ms：每个 worker 8 个客户端、4 个槽位，稳态下约 4 个请求在等槽位，而槽位要被 decode 占用约 46.5 ms。本文只测了这一个并发水平，没有像 Buoyant 那样做并发扫描；换一个并发，各策略的差距和排序都可能改变。
+
+### 8.4 为什么这些数字不能与 Kinference 的 95% / 7.4× 对比
+
+| 维度         | Buoyant 基准                               | 本文 mock                                |
+| ------------ | ------------------------------------------ | ---------------------------------------- |
+| 推理引擎     | vLLM 0.31.0，Qwen-3.8-27B-FP8，L40S        | Go `time.Sleep`，无模型                  |
+| prefill 代价 | 真实 GPU，16k token 未命中约 6.7 s         | 2 ms + 25 µs/token，线性，单 worker 串行 |
+| decode       | 与 prefill 共享 GPU、互相干扰              | 1.5 ms/token，彼此独立                   |
+| 对照组       | kube-proxy 按连接随机                      | 进程内轮询 / 最少在途 / 只看前缀         |
+| 路由器       | 完整预测器 + 在途建模 + KV 事件 + 复制覆盖 | 两项线性打分 + shadow 表                 |
+| 负载         | 16k / 8k token，开环与闭环并发扫描         | 2k / 1k token，单一闭环并发              |
+| 统计         | 3 次试验，配对分层 bootstrap 置信区间      | 3 次中位数，无置信区间                   |
+
+本实验能说明的只有：在同一个 mock 下，四种策略之间的相对关系，以及几种失效方式的方向。比值看起来与官方接近或不接近，都不说明任何问题。
+
+### 8.5 其他没有做的事
+
+- 没有异构 worker（不同 GPU、不同模型、不同 block size），而这正是 Kinference 按 pool 分组、按 profile 调参的原因。
+- 没有实现 Kinference 的二次 prefill 项、按进度折算的在途 prefill、帐篷形 running 惩罚、top-K、`cache_replication_override`；`kv` 的热前缀「复制」只是打分溢出的副作用。
+- 没有 worker 故障、重启（Kinference 中等于缓存清空的新 worker）、扩缩容。
+- 没有实现 InferencePolicy，也没有部署 Kinference 本身。
+
+---
+
+## 9. 我的看法
+
+1. **KV 感知路由真正的抽象是「把缓存命中折算成时间」，而不是「找最长前缀」。** Kinference 的 `predicted_wait_ms` 把未命中块数、在途请求剩余 prefill、引擎排队、decode 争用放进同一个毫秒数；我的两项线性打分只保留了最粗的骨架，也已经在热点负载上把 goodput 拉开了约 6 倍。只看前缀的路由器在均匀负载上看起来不错，一遇到热门 system prompt 就会把一张卡压垮——而热门 system prompt 恰恰是生产流量的常态。
+
+2. **最危险的失败是静默的。** 分词或模板不一致不报错，只让命中率回落到随机水平；路由表比真实缓存乐观，只让 p99 慢慢变差。Kinference 默认走引擎的 `/render`、提供 `compare` 模式计数分歧、记录每次预测与实测的偏差，这些「可观测性」设计比打分公式本身更值得抄。
+
+3. **参数要用自己的数据拟合。** 同一个仓库里，代码默认值和 Helm 默认值就差了数量级（例如 `queue_ms_per_entry` 1000 vs 0.2）；我的 `kv` 能赢，部分原因是它的 prefill 斜率与 mock 完全一致。真实集群里预测器的偏差会直接变成错误的路由。
+
+4. **policy 层的设计方向是对的，但要按当前代码而不是博客示例来评估。** consider / exclude / select / onEmpty 用分层与默认拒绝表达了「先硬约束、再优化、空了就失败」，这比在路由器里写一堆特例清楚得多。但在 `be2a7ad` 上，请求 tag 还没有任何来源，语义分类器还未实现；PII 隔离这类合规需求今天还不能靠 tag 守卫完成。
+
+5. **这个 mock 适合理解机制，不适合给结论。** 若继续做，优先级是：加入新前缀突发的负载，测事件延迟与派发记账的真实影响；做并发扫描；再把 prefill 换成二次模型、让 decode 与 prefill 互相干扰，看策略排序是否稳定。
+
+---
+
+## 参考
+
+- [vLLM Blog：Introducing Kinference: An Open Source Inference Control Plane for vLLM and Kubernetes（2026-11-04）](https://vllm-project.github.io/2026/11/04/introducing-kinference.html)——95% 中位 TTFT、45% 中位 E2E、7.4× / ≈3.5× goodput 的出处，以及本文引用的三段 InferencePolicy YAML。
+- [Buoyant：Distributed Inference Benchmarks: Kinference vs. Plain Kubernetes（William Morgan，2026-11-04）](https://buoyant.io/blog/distributed-inference-benchmarks-kinference-vs-plain-kubernetes)——实验环境、负载、SLO、置信区间与逐并发容量表；博客「Read more details」链接到这篇。
+- [GitHub：Kinference-AI/kinference](https://github.com/Kinference-AI/kinference)，提交 `be2a7adab327d6f39cded0b3f2b2bf6a7b523f98`（2026-11-06 03:11 PST）——本文阅读的 `README.md`、`ARCHITECTURE.md`、`docs/request-flow.md`、`crates/kinference-router/src/picker.rs`、`crates/kinference-router/src/service/{scoring,lifecycle}.rs`、`crates/kinference-fleet/src/profile.rs`、`crates/kinference-policy/src/engine.rs`、`charts/kinference-crds/templates/kinference.buoyant.io_inferencepolicies.yaml`、`charts/kinference/values.yaml`。
+- [Kinference 文档](https://kinference.ai/docs/)——博客要求以最新文档为准；本文没有引用文档站内容，以仓库代码为准。
+- 本文附带的可复现实验：`kv-router-lab/` 下的 `tokens.go`、`backend.go`、`router.go`、`loadgen.go`、`main.go`、`lab_test.go`、`run.sh`、`summarize.py`；实测数据见 `results.csv`、`pitfalls.csv`、`calibration.txt`、`summary.md`、`machine.txt`、`verification.txt`。这些是作者自己的教学代码，不是 Kinference 或 vLLM 的代码。
