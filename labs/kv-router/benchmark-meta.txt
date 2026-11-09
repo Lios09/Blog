@@ -1,0 +1,3 @@
+backend={BlockSize:16 CacheBlocks:2500 PrefillBaseMs:2 PrefillUsPerTok:25 DecodeMsPerTok:1.5 MaxRunning:4 MaxWaiting:64} slo=100ms conc/backend=8 warm=4s measure=15s reps=3
+backend={BlockSize:16 CacheBlocks:2500 PrefillBaseMs:2 PrefillUsPerTok:25 DecodeMsPerTok:1.5 MaxRunning:4 MaxWaiting:64} slo=100ms conc/backend=8 warm=4s measure=15s reps=3
+Mon Nov  9 13:51:51 CST 2026

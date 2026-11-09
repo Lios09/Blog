@@ -9,6 +9,9 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
   experimental: { inlineCss: true },
+  // outputFileTracingIncludes: {
+  //   "/*": ["./assets/fonts/*.ttf"],
+  // },
   compiler:
     process.env.NODE_ENV === "production"
       ? {

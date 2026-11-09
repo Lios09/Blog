@@ -1,6 +1,6 @@
 ---
-title: "KV-cache 感知的推理路由：读 Kinference 的 PredictedTTFT 与 InferencePolicy，再用 Go 实测前缀亲和与热点"
-description: "Buoyant 开源的 Kinference 面向 vLLM + Kubernetes：读取 KV-cache 事件与引擎指标，预测 TTFT，再用 InferencePolicy 的 consider/exclude/select/onEmpty 选端点。本文先把官方 95% 中位 TTFT 降幅与 7.4× goodput 的测量条件讲清楚，并对照仓库提交 be2a7ad 指出请求 tag 尚无来源、示例策略与 CRD/Helm 默认值的落差。最后附 Go mock：4 后端、闭环负载、三次中位数；共享前缀下轮询/只看前缀/综合打分 goodput 为 44.9/130.3/195.7 req/s；热门前缀下只看前缀把 58–62% 请求压到单后端、goodput 36.9、p99 518 ms，综合打分 217.6 且份额约 25%；分词模板不一致时 goodput 从约 200 跌到 10.7。mock 只比较路由策略，不代表真实 vLLM/Kinference 性能。"
+title: "KV-cache 感知的推理路由：读 Kinference 并用 Go 实测"
+description: "读 Kinference 的 PredictedTTFT 与 InferencePolicy，并用 Go mock 对比轮询、前缀亲和与综合打分在热点负载下的表现。"
 date: "2026-11-08"
 author: "Lios09"
 tags:
@@ -304,7 +304,7 @@ onEmpty: Reject # fail closed
 
 1. **请求 tag 目前没有来源。** CRD 对 `tag` 的描述原文：「Nothing sets tags on requests yet: the router sends an empty set, so a scalar, array or `containsAll` never matches and `{not: ...}` always matches.」`lifecycle.rs` 构造请求属性时也写着 `// Nothing produces tags yet.` 和 `tag: Vec::new()`。README 的 Known limitations 列出了尚未实现的 **Semantic classifiers**、Rate limiting、`/v1/messages` 和多副本。因此在这个提交上，第一和第三个示例里依赖 `complexity-low`、`pii-detected` 的部分不会生效：PII 示例的 `if` 守卫永远不匹配，exclusion 会被跳过。示例描述的是设计，不是当前可用的功能。
 2. **PII 示例的 tier 顺序。** 博客的文字说这是「在 GPU 池饱和时把请求 burst 到第三方」。但按 `evaluate` 的「first with a survivor wins outright」，这段 YAML 字面上把 Provider 放在第一档：没有 PII 标签、databricks 又没被剔除时，请求会直接选 databricks，而不会先看本地是否饱和。我没有部署运行这条策略，也没有看到 provider 健康度以外让它不存活的机制；这是我按代码语义对 YAML 字面的读法，可能是示例简化，不应当作已验证的线上行为。
-3. **第一个示例可能过不了 CRD 校验。** CRD 用 CEL 规则要求 `minimize: PredictedTTFT` 的 tier 要么自身限定 `type: Local`，要么 `consider` 的每一项都限定为 Local，报错信息是「PredictedTTFT is Local-only: constrain the tier or the candidate set to Local, or use EstimatedTTFT」。博客里的 `smart-semantic-routing` 两处都没有写 `type`。按规则字面，它应当在 apply 时被 API server 拒绝。我没有集群，也没能编译 `kinfctl` 来验证（仓库的 `rust-toolchain.toml` 要求 Rust 1.95.0，box 上只有 1.85.1），所以这一条只是对 schema 的阅读。
+3. **第一个示例可能过不了 CRD 校验。** CRD 用 CEL 规则要求 `minimize: PredictedTTFT` 的 tier 要么自身限定 `type: Local`，要么 `consider` 的每一项都限定为 Local，报错信息是「PredictedTTFT is Local-only: constrain the tier or the candidate set to Local, or use EstimatedTTFT」。博客里的 `smart-semantic-routing` 两处都没有写 `type`。按规则字面，它应当在 apply 时被 API server 拒绝。我没有集群，也没能编译 `kinfctl` 来验证（仓库的 `rust-toolchain.toml` 要求 Rust 1.95.0，写作环境里只有 1.85.1），所以这一条只是对 schema 的阅读。
 4. **博客提到的 token rate limiting**，README 目前把 Rate limiting 列在缺失功能里。
 
 这些不影响 KV 感知负载均衡本身——那部分的代码完整、注释详尽——但如果要用 policy 层做合规隔离，目前不能依赖 `tag`（路由器传入的是空集合），只能改用 `tenant`、`model`、`qos` 等已有的请求属性，或等标签来源落地。
@@ -313,7 +313,7 @@ onEmpty: Reject # fail closed
 
 ## 5. Go 实验：先把 mock 的假设全部摆出来
 
-**自己写的最小实现，非 Kinference 实现。** 没有用 Kinference 的代码，没有 GPU，没有 vLLM；三个组件都在一个 Go 进程里，但彼此之间走真实的 localhost HTTP 和 SSE 流式响应，TTFT 是客户端从发出请求到收到第一个内容 chunk 的时间。代码在 `kv-router-lab/`，只用标准库。
+**自己写的最小实现，非 Kinference 实现。** 没有用 Kinference 的代码，没有 GPU，没有 vLLM；三个组件都在一个 Go 进程里，但彼此之间走真实的 localhost HTTP 和 SSE 流式响应，TTFT 是客户端从发出请求到收到第一个内容 chunk 的时间。代码只用 Go 标准库，完整源码和原始数据放在 [`labs/kv-router/`](https://github.com/Lios09/Blog/tree/main/labs/kv-router)。
 
 ```text
   load generator (closed loop, C clients)
@@ -523,13 +523,13 @@ func (r *Router) pick(nTok int, hs []uint64) (int, int) {
 `lab_test.go` 覆盖：共享前缀的块哈希相同、分叉后不同、同内容不同位置哈希不同；LRU 不先驱逐头部；匹配在第一个缺失处停止；`prefix` 策略在在途 100 时仍坚持热 worker、`kv` 在在途 1 时留下而在途 3 时溢出、`rr` 交替；渲染模板不同时所有块哈希都不同。
 
 ```bash
-cd /workspace/blog/kv-router-lab
+cd labs/kv-router
 go test -v ./... && go test -race ./... && go vet ./...
 ./run.sh   # calibrate -> main (72 runs) -> pitfalls (30 runs)
 python3 summarize.py
 ```
 
-`verification.txt` 记录 5 个测试全部 PASS，`-race` 与 `vet` 通过。
+5 个测试全部通过，`go test -race` 与 `go vet` 也通过（见 `verification.txt`）。全量运行约半小时。
 
 ---
 
@@ -537,7 +537,7 @@ python3 summarize.py
 
 ### 7.1 环境
 
-运行时间 **2026-11-08 21:19–21:51 PST（America/Los_Angeles）**（box 的系统时区显示为 CST，即 UTC+8 的 11-09 13:19–13:51，已换算）。共享虚拟机，负载可能变化，不是独占硬件。
+运行时间 **2026-11-08 21:19–21:51 PST（America/Los_Angeles）**。共享虚拟机，负载可能变化，不是独占硬件。
 
 | 项目     | 实际环境                                                                                       |
 | -------- | ---------------------------------------------------------------------------------------------- |
@@ -705,4 +705,4 @@ hot 负载最清楚地说明了这一点：`prefix` 的命中率 96.74%，与 `k
 - [Buoyant：Distributed Inference Benchmarks: Kinference vs. Plain Kubernetes（William Morgan，2026-11-04）](https://buoyant.io/blog/distributed-inference-benchmarks-kinference-vs-plain-kubernetes)——实验环境、负载、SLO、置信区间与逐并发容量表；博客「Read more details」链接到这篇。
 - [GitHub：Kinference-AI/kinference](https://github.com/Kinference-AI/kinference)，提交 `be2a7adab327d6f39cded0b3f2b2bf6a7b523f98`（2026-11-06 03:11 PST）——本文阅读的 `README.md`、`ARCHITECTURE.md`、`docs/request-flow.md`、`crates/kinference-router/src/picker.rs`、`crates/kinference-router/src/service/{scoring,lifecycle}.rs`、`crates/kinference-fleet/src/profile.rs`、`crates/kinference-policy/src/engine.rs`、`charts/kinference-crds/templates/kinference.buoyant.io_inferencepolicies.yaml`、`charts/kinference/values.yaml`。
 - [Kinference 文档](https://kinference.ai/docs/)——博客要求以最新文档为准；本文没有引用文档站内容，以仓库代码为准。
-- 本文附带的可复现实验：`kv-router-lab/` 下的 `tokens.go`、`backend.go`、`router.go`、`loadgen.go`、`main.go`、`lab_test.go`、`run.sh`、`summarize.py`；实测数据见 `results.csv`、`pitfalls.csv`、`calibration.txt`、`summary.md`、`machine.txt`、`verification.txt`。这些是作者自己的教学代码，不是 Kinference 或 vLLM 的代码。
+- [本文的 Go mock 实验：`labs/kv-router/`](https://github.com/Lios09/Blog/tree/main/labs/kv-router)——`tokens.go`、`backend.go`、`router.go`、`loadgen.go`、`main.go`、`lab_test.go`、`run.sh`、`summarize.py`；原始数据见 `results.csv`、`pitfalls.csv`、`calibration.txt`、`summary.md`。这些是作者自己的教学代码，不是 Kinference 或 vLLM 的代码。

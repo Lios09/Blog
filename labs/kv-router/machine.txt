@@ -1,0 +1,7 @@
+go version go1.27.3 linux/amd64
+Linux 6.12.94+ x86_64
+8
+model name	: Intel(R) Xeon(R) Processor
+               total        used        free      shared  buff/cache   available
+Mem:            15Gi        13Gi       325Mi        72Mi       2.7Gi       2.6Gi
+Mon Nov  9 13:19:06 CST 2026

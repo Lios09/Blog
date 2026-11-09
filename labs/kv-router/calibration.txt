@@ -1,0 +1,3 @@
+backend={BlockSize:16 CacheBlocks:2500 PrefillBaseMs:2 PrefillUsPerTok:25 DecodeMsPerTok:1.5 MaxRunning:4 MaxWaiting:64} slo=100ms conc/backend=8 warm=4s measure=15s reps=3
+idle uncached TTFT: p50=54.99ms p99=56.62ms n=20
+idle warm-prefix TTFT (prompt=2066 tokens, cached=2000): p50=5.04ms p99=5.36ms n=19

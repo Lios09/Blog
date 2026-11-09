@@ -1,0 +1,13 @@
+=== RUN   TestChainedHashesSharePrefixOnly
+--- PASS: TestChainedHashesSharePrefixOnly (0.00s)
+=== RUN   TestLRUEvictsTailBeforeHead
+--- PASS: TestLRUEvictsTailBeforeHead (0.00s)
+=== RUN   TestMatchStopsAtFirstMiss
+--- PASS: TestMatchStopsAtFirstMiss (0.00s)
+=== RUN   TestPolicies
+--- PASS: TestPolicies (0.00s)
+=== RUN   TestMismatchedTemplateBreaksAllHashes
+--- PASS: TestMismatchedTemplateBreaksAllHashes (0.00s)
+PASS
+ok  	kv-router-lab	(cached)
+ok  	kv-router-lab	(cached)
