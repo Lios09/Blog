@@ -1,10 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const fontsDir = join(process.cwd(), "assets/fonts");
-
-async function loadFont(filename: string) {
-  const buffer = await readFile(join(fontsDir, filename));
+/**
+ * Each path must stay a static `join(process.cwd(), "assets/fonts/…")`
+ * so file tracing copies the fonts into `.next/standalone`.
+ */
+function toArrayBuffer(buffer: Buffer) {
   return buffer.buffer.slice(
     buffer.byteOffset,
     buffer.byteOffset + buffer.byteLength,
@@ -12,20 +13,24 @@ async function loadFont(filename: string) {
 }
 
 const [geistSemiBold, geistMono] = await Promise.all([
-  loadFont("Geist-SemiBold.ttf"),
-  loadFont("GeistMono-Regular.ttf"),
+  readFile(join(process.cwd(), "assets/fonts/Geist-SemiBold.ttf")).then(
+    toArrayBuffer,
+  ),
+  readFile(join(process.cwd(), "assets/fonts/GeistMono-Regular.ttf")).then(
+    toArrayBuffer,
+  ),
 ]);
 
 export const ogFonts = [
   {
     name: "Geist",
-    data: geistSemiBold,
+    data: geistSemiBold as ArrayBuffer,
     weight: 600 as const,
     style: "normal" as const,
   },
   {
     name: "Geist Mono",
-    data: geistMono,
+    data: geistMono as ArrayBuffer,
     weight: 400 as const,
     style: "normal" as const,
   },
