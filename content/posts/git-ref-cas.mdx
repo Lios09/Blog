@@ -1,0 +1,771 @@
+---
+title: "GitHub Rubicon：只协调 ref 更新，用 Go 实测整仓锁与按 ref CAS"
+description: "GitHub 的新 Git 存储架构 Rubicon 把不可变对象放进 Azure Blob Storage，把 references 与 pack manifest 的事务交给 Ref-CAS，再用可丢弃的 virtual replicas 和独立 compaction 节点承接读写与维护。本文依据官方全文解释发布边界与按 ref 并行的前提，并附一个实际运行的 Go 最小实现：SHA-256 不可变对象、文件与目录 fsync 后再 CAS、按 ref 有序内存日志与整仓互斥基线。36 轮共 216,000 个已确认 push 全部通过进程内校验；N=32 时独立 ref 中位 15,216 push/s 对整仓锁 4,397，同一 ref 则 858 对 3,937、attempt 冲突率 93.6%。ref 日志不持久，不证明崩溃恢复或分布式一致性，数字也不能与 GitHub 内部的 7,200 push/s 比较。"
+date: "2026-11-07"
+author: "Lios09"
+tags:
+  - git
+  - go
+  - distributed-systems
+  - storage
+  - concurrency
+category: "Development"
+published: true
+featured: false
+---
+
+## 1. 先界定数字：7,200 push/s 是官方内部测试，不是本文成绩
+
+GitHub 在 2026-11-05 的 [《Inside GitHub’s new Git storage architecture》](https://github.blog/engineering/architecture-optimization/inside-githubs-new-git-storage-architecture/)中介绍了 Project Rubicon。本文已读该文全文；下文所有关于 Rubicon 的组件、流程、现状与数字，均来自这一个官方来源，不把日报摘要当证据。
+
+原文开头说，内部测试支持 **5,000 个并发 agents 在一个仓库工作、向一个仓库发送 7,200 次 push/s，同时服务持续低延迟的读流量**。这不是公开 benchmark 的可复现配方：正文没有给出这组测试的完整硬件、pack 大小、各 ref 流量分布、测试时长和 p99 明细。尤其不能推断成「5,000 个 agent 同时向同一分支成功提交」。
+
+| 原文中的规模表述                | 正确口径                                       | 不应替换成什么                            |
+| ------------------------------- | ---------------------------------------------- | ----------------------------------------- |
+| 5,000 并发 agents、7,200 push/s | 单仓库内部系统测试                             | 同一个 ref 的成功 CAS/s，或所有用户的 SLA |
+| Ref-CAS 每秒数万次操作          | 仅 reference state 的事务处理能力              | 含对象上传与校验的端到端 push 吞吐        |
+| 单 blob WAL 原型每秒数百次写    | 那个特定原型的观测                             | Azure Blob 的普遍吞吐上限                 |
+| 当前 limited private preview    | 文章发布时的开放状态；计划次年年初扩大 rollout | 所有 GitHub 仓库已经切换完成              |
+
+2026-11-05 文中的「early next year」对应 **2027 年年初的计划**，不是本文核验过的后续上线事实。本文也没有从原文曲线图片估读额外数字。
+
+---
+
+## 2. 真正的拆分：对象可以并发写，名字指向哪里必须达成一致
+
+### 2.1 不可变数据与可变指针承担不同职责
+
+原文的核心观察是：Git objects 不可变、由内容命名，两个 writer 存储对象时不需要先互相商量；push 中需要 agreement 的是体积很小的 reference update。
+
+用一个简化例子理解这件事：A、B 都从 `main=H0` 出发，分别准备新对象 `HA` 和 `HB`。这两个对象都可以存在于对象存储里。但如果双方都想把 `main` 从 `H0` 改走，不能因为二者上传成功就都宣布引用更新成功。
+
+```text
+                    immutable data plane
+ writer A ---- upload objects for HA ----+
+                                         +---- Blob Storage
+ writer B ---- upload objects for HB ----+
+
+                     mutable metadata plane
+ A: CAS(main, H0 -> HA) ---- succeeds ----> main = HA
+ B: CAS(main, H0 -> HB) ---- conflicts ---> do NOT overwrite HA
+```
+
+这个图只是语义示意。**「对象写入不需要 writer 之间达成共识」不等于操作系统、对象存储内部完全没有同步，也不等于整个 push 不需要事务。** 对象是否可达、谁被授权写、ref 旧值是否一致，都是另一层的问题。
+
+### 2.2 pack manifest 也属于发布事务
+
+官方把 durable state 分在两个地方：
+
+- **Azure Blob Storage**：Git 对象的 packs，以及辅助读加速数据。
+- **Ref-CAS**：references 和组成仓库的 pack 列表，即 pack manifest。
+
+manifest 不能被忽略。若引用已经变了，而读取它的 replica 不知道该去取哪个 pack，就还没有建立完整的可读发布状态。原文的写路径因此不是「上传后单独改一个 ref」，而是**一次 Ref-CAS 事务同时把 pack 列入 manifest，并更新 references**。
+
+原文还指出，incoming pack 的 indexing 和 object connectivity 检查是写路径中最吃 CPU 的部分，成本随写入大小增长。把它们压在一个写节点上，单靠缩短锁时间也不能无限扩容；所以多 writer 节点与独立扩容同样重要。
+
+---
+
+## 3. 为什么没有把 references 也全部留在 Blob Storage
+
+Blob 适合大量不同 key 的一次写入数据；热点 references 则是小状态、多写者反复争用。官方试过两种设计，展示的不是某个产品「不好」，而是访问模式的取舍。
+
+| 方案                                     | 如何写                                 | 读端如何确认变化                 | 官方遇到的代价                                                                           |
+| ---------------------------------------- | -------------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------- |
+| 全仓 references 的 WAL，由单个 blob 索引 | 对该 blob 条件写；把等待中的 push 合批 | 看该 blob 是否变化               | 同一 blob 只能有一个在途条件写；即使合批，仍被单 blob 往返节奏限制，原型得到每秒数百次写 |
+| references 哈希到多个 segment blobs      | 不同 segment 可并发                    | 必须检查所有 segments            | 读要等最慢的 segment；读比写多几个数量级，不值得这样转移代价                             |
+| 独立 Ref-CAS 服务                        | 触碰的 refs 上做 CAS、quorum 提交      | 版本检查；落后时取得新状态与指针 | 引入专用复制日志服务，但把协调集中到小状态                                               |
+
+这里有一个容易忽略的目标：**没有变化的读必须便宜。** 若只看 writer 的分片吞吐，把每一次普通读取都变成 N 路探测，就可能把系统总开销做大。
+
+### 3.1 按 ref 锁定，不等于每个 ref 都跑一个 Raft
+
+原文描述 Ref-CAS 的事务：只锁它触碰的 references，检查每个 ref 是否仍为 writer 预期值；日志的多数 replicas 记录后，事务变为可见。agents 通常推自己的分支，因此大多数更新不互相竞争，可以并行复制；竞争同一 ref 的两个 push 只有一个能追加成功。
+
+这里不能自行补出实现细节：官方没有在本文公开共识算法名称、成员数量、选主过程或分片拓扑。**「按 ref 独立排序」不应被写成「每个 ref 一个独立的 Raft group」。** 事务还可能触碰多个 refs，不能把它缩减成只能更新单个 key 的接口。
+
+每次 Ref-CAS commit 获得一个 **LSN（log sequence number）**，仓库版本是最新 commit 的 LSN。按 ref 缩小竞争范围，与提供仓库级版本，并不矛盾：前者描述更新互斥范围，后者用于让读端判断自己是否落后。
+
+### 3.2 数据先 durable，指针后发布
+
+原文明确说：virtual replica **先把 pack 上传到 Blob Storage，再提交 reference transaction**；Ref-CAS 不持有、不验证对象本身，只存指针。因此 reference 指向的对象已经 durable。
+
+工程上，这个次序允许出现「对象存在，但最终没有成功成为 ref 可达历史的一部分」；不能反过来容忍「ref 成功了，对象还没持久化」。前者需要垃圾回收处理，后者是读取正确性问题。关于孤儿对象的这句话是我对发布顺序的推导，不是原文额外公布的一套失败恢复算法。
+
+---
+
+## 4. Virtual replica：本地磁盘从仓库权威变成可重建缓存
+
+原文里的 Spokes 仍负责入口路由、负载均衡和内部 API，也继续负责 placement、partitioning、isolation 与 tenant fairness。新的部分是其下方的数据面，不是用 Blob 取代所有控制平面。
+
+```text
+ Git clients / API / web UI
+              |
+              v
+           Spokes
+              |
+      assigned virtual replicas        dedicated compaction nodes
+       +---------+---------+                      |
+       |         |         |                      |
+      VR-1      VR-2      VR-3                     |
+       |         |         |                      |
+       +----- local disposable caches             |
+       |                                          |
+       +------------> Azure Blob Storage <--------+
+       |                 packs / indexes          |
+       +------------> Ref-CAS <-------------------+
+                     refs + pack manifest + LSN
+```
+
+virtual replicas 是一支可服务读、写或两者的 disposable compute fleet。Spokes 尽量把仓库流量送到同一组 replicas，让缓存保持温热；但正确性不依赖请求落到某一个指定节点。节点消失，其他 replicas 继续服务，替代节点随流量补缓存；仓库繁忙时增加 replicas。
+
+### 4.1 一次写和一次读各自经过什么
+
+| 路径                   | 原文给出的步骤                                                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Write                  | virtual replica 索引 incoming pack → 上传 Blob → 一笔 Ref-CAS 事务登记 pack 并更新 refs → 后台稍后 compaction |
+| Read                   | 向 Ref-CAS 检查 reference version → 从 Blob 拉取需要的 packs 到本地缓存 → 提供读取                            |
+| 未变化的 version check | replica 送出已有版本；仍最新时，响应不带 references，只做版本比较                                             |
+| replica 落后           | 返回当前 references、version、pack pointers，以及最近 GC 等需要知道的信息                                     |
+
+「一次比较」不是「没有网络请求」；「不依赖固定 replica」也不是「任何一致性模式都无所谓」。原文描述了现有的版本检查，不能拿计划中的 global replicas 与 bounded staleness 倒推当前全部读的语义。
+
+### 4.2 不能把路线图写成既有能力
+
+原文把下面几项列在后续改进方向：从 Blob **只取一个对象而不是整个 pack**、按对象类型组织 packs、partial replicas、materialized views、global replicas、scale to zero。它们不是本文可证明已全部交付的功能。
+
+尤其要区分：当前读路径已经会下载所需 packs；路线图中的 partial replicas 则明确谈到不必在本地拥有每个 pack 就服务请求。本文没有据此杜撰一个已经落地的逐对象按需下载协议，也没有运行 virtual replica 模拟器。
+
+---
+
+## 5. 独立 compaction 不是附属优化，而是吞吐的另一半
+
+每次 push 增加一个 pack，pack 数量无限增长会使查找越来越贵。旧架构的 compaction 在服务流量的 replicas 上做，而且每个 replica 都要做；新架构由独立节点直接操作 Blob 与 Ref-CAS，不占 virtual replica 的维护预算。
+
+官方公开的一个 shard 的处理过程是：
+
+```text
+ claim shard lease in Blob
+          |
+ read manifest -> collect new packs into OPEN segment
+          |
+ threshold: pack count / size / age
+          v
+         SEALED segment -----> combine into fewer larger packs
+          |                              |
+ next OPEN segment starts       verify EXACT same object set
+                                         |
+                                upload new packs
+                                         |
+                           transaction 1: add outputs to manifest
+                                         |
+                           transaction 2: remove input packs
+                                         |
+                                 later cleanup deletes inputs
+```
+
+每个 pack 的 hash 映射到一个 shard；多 shards、多节点并行。还没达到大小上限的 compacted pack，再按自己的 hash 回到 shard 继续合并，分层增长直到达到上限。官方报告的目标效果是写入上升时 pack count 基本保持平坦，并称已经持续展示出写入增加时平坦的 latency curve；本文不从图里补具体数值。
+
+两次 manifest transaction 的细节值得注意：先增加输出，再移除输入，最后才物理清理旧数据。**我认为这体现了发布与回收的分离**，但不能据此声称掌握了它针对并发 readers 的全部回收安全协议；原文没有在这里展开。
+
+Compaction 保留所有 objects；GC 才删除不再可达的对象，例如删除分支和 force-push 留下的对象。原文只说新 GC 也使用独立 workers，安全删除的特殊处理值得另文介绍。本文不补造 grace period、引用计数、快照隔离或具体 GC 算法。
+
+Blob 中还存 indexes、multi-pack indexes、reachability bitmaps、维护记录及 leases、常见 fetch 的缓存响应，以及 ref state checkpoints。**checkpoints 不是处理请求时使用的权威 ref 状态**；权威更新仍在 Ref-CAS。这也解释了「几乎全部 durable data 在 Blob」为什么不等于「所有权威状态都只在 Blob」。
+
+---
+
+## 6. Go 实验：把最小语义做对，再谈性能
+
+**自己写的最小实现，非 GitHub 实现。** 这是独立教学程序，没有克隆 GitHub 内部代码，也没有调用 GitHub 服务。代码位于 `rubicon-go-lab/`；下面会给出核心实现与完整运行入口。
+
+最重要的边界先写在前面：**本地 CAS 只演示条件更新和有序发布语义，不复现分布式共识、复制或故障恢复。** `sync.Mutex` 不是 quorum；Go 进程中的 append-only slice 不是 Ref-CAS 的复制日志。
+
+| 本实验组件  | 做了什么                                                                   | 没做什么                                                     |
+| ----------- | -------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| 对象库      | 自定义 JSON commit 的 SHA-256 内容地址；本地目录；写入后不覆盖             | Git loose-object 编码、真实 Git OID、pack/index、连通性检查  |
+| 持久化顺序  | 临时文件 `Sync` → hard link 原子发布 → 目录 `Sync` → durable receipt → CAS | Azure 多副本 durability、断电故障注入、云盘控制器验证        |
+| 按 ref 日志 | 每个 ref 一把锁，条件更新与 append 在同一临界区                            | durable ref WAL、quorum、多 ref 原子事务、manifest、仓库 LSN |
+| 重试        | 冲突后读取新 head，重新生成带新 parent 的 commit，再写对象、CAS            | 真实文件差异 rebase、冲突解决、权限与分支保护                |
+| 基线        | 一把整仓 mutex 包住读 head、对象写入与 CAS                                 | GitHub 旧架构的完整复刻                                      |
+| 校验        | 每次 run 完成后对照全部 ack、日志、对象和持久化顺序检查                    | 跨进程恢复、网络分区、线性一致性模型检查                     |
+
+### 6.1 对象发布不能用「先创建最终文件，再慢慢写」
+
+若直接对最终 hash 路径 `O_EXCL` 后再写内容，另一个 writer 看到 EEXIST 时，首个 writer 可能还没写完，甚至还没 `fsync`。本实验改为：
+
+1. 在对象目录里创建随机临时文件，写完后 `File.Sync()`、关闭。
+2. `os.Link(tmp, finalHash)`：同一文件系统内原子地「不存在才发布」，EEXIST 也不覆盖。
+3. 删除临时名字，`Sync()` 对象目录，再发放 durable receipt。
+4. CAS 拒绝没有 receipt 的新值。
+
+即使遇到 EEXIST，当前 writer 也要同步目录后才能返回 durable；不能盲信另一个 writer 已经完成它的目录同步。实验不使用应用层对象互斥锁，但底层文件系统仍会做自己的同步。`Get()` 重算 SHA-256 校验内容。
+
+这里按 Linux/ext4 的 `fsync` 接口契约把成功同步视为 durable；**没有通过真实断电验证设备是否兑现契约**。receipt 是进程内审计凭据，不是磁盘或复制服务签发的持久证明；进程重启后也没有恢复它的逻辑。
+
+### 6.2 同一 ref 与不同 ref 必须分开测
+
+两个负载不混在一条平均数里：
+
+- `same`：所有 goroutine 更新 `refs/heads/main`。
+- `distinct`：writer `w` 只更新自己的 `refs/heads/agent-w`；N=1 时只有一个分支，结构上与单 writer 的 `same` 等价。
+
+每个操作是一个唯一的 `push-NNNNNN`。commit 包含 parent、操作 ID 和 1,024 字节的固定 payload。payload 相同但操作 ID 不同，所以成功 commits 内容不同；每次冲突后，parent 改变，重建出的对象也不同。失败尝试留下的对象不被覆盖，临时实验目录在计时和验证之后统一清理。
+
+按 ref 设计在准备和同步对象时不持有 ref 锁，只在读 head / CAS 时持有；整仓锁基线则把同一套工作全部串行化。基线没有乐观 CAS 竞争，所以它的 conflict=0 **并不代表没有等待**，等待会反映在 latency 中。
+
+这份实现把 payload 内嵌在每次尝试的 commit，重试会重写它；真实 Git 可以把内容对象与 parent-bearing commit 分开复用。没有 backoff 或自适应 admission control，仅在冲突后 `runtime.Gosched()`。因此这是刻意暴露冲突重做成本的简单模型，不是调优后的生产 push 服务。
+
+### 6.3 每轮完成后检查什么
+
+不是「程序没 panic」就算正确。`Verify()` 在所有 goroutine 停止后检查：
+
+- 每个 ack 的操作 ID 唯一，日志里恰好出现一次，ref 名与 object ID 相符；日志也不能凭空多出未确认成功的操作。
+- 每个 ref 的序号从 1 连续递增；每一条 `Old` 等于前一条 `New`；head 等于该 ref 最后一项。
+- 日志对应对象哈希正确，JSON 中 parent 与操作 ID 匹配；这也检查每个成功操作在最终 parent chain 中，没有被后续更新悄悄覆盖。
+- 每条记录的 durable receipt 先于 CAS publish 审计序号，且对象存在。receipt 只在文件与目录 `fsync` 成功后产生，因此每一个引用更新都发生在对象同步之后。
+
+`Store.clock` 只是记录同步与发布先后的**本机审计计数器**，不是 Rubicon 的 LSN，更不是一个实现共识的全局时钟。不同 refs 的测试结果没有宣称多 ref 原子性。
+
+测试还覆盖了并发发布相同内容、拒绝未 durable 对象、拒绝陈旧 old 值、检测丢失 ack，以及检测对象被外部破坏。`go test -race` 检查本次测试覆盖到的数据竞争，不等价于证明所有并发 interleaving 都正确。
+
+### 6.4 完整核心代码：`lab.go`
+
+`go.mod` 内容为 `module rubicon-go-lab`，语言版本 `go 1.25`；只用标准库。当前机器已经有可用的 `go1.27.3 linux/amd64`，所以没有安装 SDK，也没有依赖 apt。
+
+```go
+// 自己写的最小实现，非 GitHub 实现。No Git protocol or distributed consensus.
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+type Store struct {
+	root    string
+	durable sync.Map      // object ID -> receipt, issued only after file AND directory fsync
+	clock   atomic.Uint64 // audit only; not a repository LSN or a consensus protocol
+}
+
+func syncDir(path string) error {
+	d, e := os.Open(path)
+	if e != nil {
+		return e
+	}
+	defer d.Close()
+	return d.Sync()
+}
+func NewStore(root string) (*Store, error) {
+	abs, e := filepath.Abs(root)
+	if e != nil {
+		return nil, e
+	}
+	if e = os.MkdirAll(abs, 0700); e != nil {
+		return nil, e
+	}
+	// Persist the pre-provisioned directory chain too (Linux local filesystem).
+	for d := abs; ; d = filepath.Dir(d) {
+		if e = syncDir(d); e != nil {
+			return nil, e
+		}
+		if d == filepath.Dir(d) {
+			break
+		}
+	}
+	return &Store{root: abs}, nil
+}
+func (s *Store) Put(data []byte) (string, error) {
+	sum := sha256.Sum256(data)
+	id := hex.EncodeToString(sum[:])
+	f, e := os.CreateTemp(s.root, ".tmp-")
+	if e != nil {
+		return "", e
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, e = f.Write(data); e != nil {
+		f.Close()
+		return "", e
+	}
+	if e = f.Sync(); e != nil {
+		f.Close()
+		return "", e
+	}
+	if e = f.Close(); e != nil {
+		return "", e
+	}
+	// Atomic write-if-absent: never expose a half-written final object.
+	e = os.Link(tmp, filepath.Join(s.root, id))
+	if e != nil && !errors.Is(e, os.ErrExist) {
+		return "", e
+	}
+	if e = os.Remove(tmp); e != nil {
+		return "", e
+	}
+	// Even EEXIST callers sync the directory before claiming durability.
+	if e = syncDir(s.root); e != nil {
+		return "", e
+	}
+	s.durable.Store(id, s.clock.Add(1))
+	return id, nil
+}
+func (s *Store) Durable(id string) bool { _, ok := s.durable.Load(id); return ok }
+func (s *Store) Get(id string) ([]byte, error) {
+	if len(id) != 64 {
+		return nil, fmt.Errorf("invalid id")
+	}
+	if _, e := hex.DecodeString(id); e != nil {
+		return nil, e
+	}
+	b, e := os.ReadFile(filepath.Join(s.root, id))
+	if e != nil {
+		return nil, e
+	}
+	sum := sha256.Sum256(b)
+	if hex.EncodeToString(sum[:]) != id {
+		return nil, fmt.Errorf("checksum mismatch: %s", id)
+	}
+	return b, nil
+}
+
+type Commit struct{ Parent, Op, Payload string }
+
+func EncodeCommit(parent, op string, size int) []byte {
+	b, _ := json.Marshal(Commit{parent, op, strings.Repeat("x", size)})
+	return b
+}
+
+type Entry struct {
+	Seq                     int
+	Old, New, Op            string
+	DurableReceipt, Publish uint64
+}
+type Ref struct {
+	mu   sync.Mutex
+	head string
+	log  []Entry
+}
+
+func NewRef() *Ref          { return &Ref{} }
+func (r *Ref) Head() string { r.mu.Lock(); defer r.mu.Unlock(); return r.head }
+func (r *Ref) CAS(s *Store, old, next, op string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	receipt, ok := s.durable.Load(next)
+	if !ok {
+		return false, fmt.Errorf("object not durable")
+	}
+	if r.head != old {
+		return false, nil
+	}
+	publish := s.clock.Add(1)
+	r.log = append(r.log, Entry{len(r.log) + 1, old, next, op, receipt.(uint64), publish})
+	r.head = next
+	return true, nil
+}
+
+type Ack struct{ Ref, Op, ID string }
+type Result struct {
+	Design, Work                                                  string
+	N, Pushes, Acked, Verified                                    int
+	Conflicts                                                     int64
+	Seconds, PushesSec, ConflictPct, RetriesPerPush, P50ms, P99ms float64
+}
+
+func Verify(s *Store, refs map[string]*Ref, acks []Ack) (int, error) {
+	acknowledged := make(map[string]Ack, len(acks))
+	for _, a := range acks {
+		if _, ok := acknowledged[a.Op]; ok {
+			return 0, fmt.Errorf("duplicate ack %s", a.Op)
+		}
+		acknowledged[a.Op] = a
+	}
+	seen := make(map[string]bool, len(acks))
+	total := 0
+	for name, r := range refs {
+		old := ""
+		for i, e := range r.log {
+			if e.Seq != i+1 || e.Old != old {
+				return 0, fmt.Errorf("broken ordered chain")
+			}
+			if e.DurableReceipt == 0 || e.DurableReceipt >= e.Publish || !s.Durable(e.New) {
+				return 0, fmt.Errorf("publish before fsync")
+			}
+			b, err := s.Get(e.New)
+			if err != nil {
+				return 0, err
+			}
+			var c Commit
+			if err = json.Unmarshal(b, &c); err != nil {
+				return 0, err
+			}
+			if c.Parent != e.Old || c.Op != e.Op {
+				return 0, fmt.Errorf("commit/log mismatch")
+			}
+			a, ok := acknowledged[e.Op]
+			if !ok || a.Ref != name || a.ID != e.New || seen[e.Op] {
+				return 0, fmt.Errorf("ack/log mismatch")
+			}
+			seen[e.Op] = true
+			old = e.New
+			total++
+		}
+		if r.head != old {
+			return 0, fmt.Errorf("head/log mismatch")
+		}
+	}
+	if total != len(acks) {
+		return 0, fmt.Errorf("lost acknowledged push: log=%d ack=%d", total, len(acks))
+	}
+	return total, nil
+}
+func percentile(v []time.Duration, p float64) float64 {
+	i := int(float64(len(v))*p+0.999999) - 1
+	if i < 0 {
+		i = 0
+	}
+	return float64(v[i]) / float64(time.Millisecond)
+}
+func Run(root, design, work string, n, total, size int) (Result, error) {
+	out := Result{Design: design, Work: work, N: n, Pushes: total}
+	if n < 1 || total < n || size < 0 || (design != "repo-lock" && design != "per-ref") || (work != "same" && work != "distinct") {
+		return out, fmt.Errorf("invalid configuration")
+	}
+	s, e := NewStore(root)
+	if e != nil {
+		return out, e
+	}
+	refs := map[string]*Ref{}
+	names := make([]string, n)
+	for w := 0; w < n; w++ {
+		name := "refs/heads/main"
+		if work == "distinct" {
+			name = fmt.Sprintf("refs/heads/agent-%d", w)
+		}
+		names[w] = name
+		if refs[name] == nil {
+			refs[name] = NewRef()
+		}
+	}
+	var repo sync.Mutex
+	var wg sync.WaitGroup
+	var conflicts atomic.Int64
+	acks := make([][]Ack, n)
+	latencies := make([][]time.Duration, n)
+	errs := make([]error, n)
+	startGate := make(chan struct{})
+	for w := 0; w < n; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			<-startGate
+			r := refs[names[w]]
+			for i := w; i < total; i += n {
+				op := fmt.Sprintf("push-%06d", i)
+				start := time.Now()
+				if design == "repo-lock" {
+					repo.Lock()
+				}
+				old := r.Head()
+				for {
+					// On conflict, recreate the commit on the new parent. This is NOT a file merge.
+					id, err := s.Put(EncodeCommit(old, op, size))
+					if err != nil {
+						errs[w] = err
+						break
+					}
+					ok, err := r.CAS(s, old, id, op)
+					if err != nil {
+						errs[w] = err
+						break
+					}
+					if ok {
+						acks[w] = append(acks[w], Ack{names[w], op, id})
+						break
+					}
+					conflicts.Add(1)
+					old = r.Head()
+					runtime.Gosched()
+				}
+				if design == "repo-lock" {
+					repo.Unlock()
+				}
+				if errs[w] != nil {
+					return
+				}
+				latencies[w] = append(latencies[w], time.Since(start))
+			}
+		}(w)
+	}
+	start := time.Now()
+	close(startGate)
+	wg.Wait()
+	elapsed := time.Since(start)
+	var all []Ack
+	var times []time.Duration
+	for w := 0; w < n; w++ {
+		if errs[w] != nil {
+			return out, errs[w]
+		}
+		all = append(all, acks[w]...)
+		times = append(times, latencies[w]...)
+	}
+	verified, e := Verify(s, refs, all)
+	if e != nil {
+		return out, e
+	}
+	if len(all) != total {
+		return out, fmt.Errorf("incomplete run")
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
+	out.Acked = len(all)
+	out.Verified = verified
+	out.Conflicts = conflicts.Load()
+	out.Seconds = elapsed.Seconds()
+	out.PushesSec = float64(total) / elapsed.Seconds()
+	out.ConflictPct = 100 * float64(out.Conflicts) / float64(int64(total)+out.Conflicts)
+	out.RetriesPerPush = float64(out.Conflicts) / float64(total)
+	out.P50ms = percentile(times, 0.5)
+	out.P99ms = percentile(times, 0.99)
+	return out, nil
+}
+```
+
+### 6.5 完整命令行入口：`main.go`
+
+入口给每次 run 创建独立临时目录；每个 run 保持总成功操作数相同。重复轮次交替两种设计的先后顺序，以降低固定顺序偏差，但没有随机化全部场景，也没有控制共享主机其他活动。
+
+```go
+package main
+
+import (
+	"encoding/csv"
+	"flag"
+	"fmt"
+	"os"
+	"runtime"
+	"strconv"
+	"strings"
+)
+
+func main() {
+	total := flag.Int("pushes", 1200, "fixed total successful pushes per run")
+	repeats := flag.Int("repeats", 3, "repetitions")
+	workers := flag.String("workers", "1,8,32", "goroutine counts")
+	payload := flag.Int("payload", 1024, "payload bytes per commit")
+	flag.Parse()
+	fmt.Fprintf(os.Stderr, "go=%s os=%s arch=%s cpus=%d GOMAXPROCS=%d pushes=%d payload=%d repeats=%d\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), runtime.GOMAXPROCS(0), *total, *payload, *repeats)
+	w := csv.NewWriter(os.Stdout)
+	w.Write([]string{"rep", "scenario", "design", "N", "pushes", "seconds", "pushes_s", "conflicts", "conflict_pct", "retries_push", "p50_ms", "p99_ms", "verified"})
+	w.Flush()
+	for rep := 1; rep <= *repeats; rep++ {
+		for _, work := range []string{"same", "distinct"} {
+			for _, ns := range strings.Split(*workers, ",") {
+				n, e := strconv.Atoi(ns)
+				if e != nil {
+					panic(e)
+				}
+				designs := []string{"repo-lock", "per-ref"}
+				if rep%2 == 0 {
+					designs = []string{"per-ref", "repo-lock"}
+				}
+				for _, design := range designs {
+					dir, e := os.MkdirTemp("", "rubicon-lab-")
+					if e != nil {
+						panic(e)
+					}
+					r, e := Run(dir, design, work, n, *total, *payload)
+					cleanup := os.RemoveAll(dir)
+					if e != nil {
+						panic(e)
+					}
+					if cleanup != nil {
+						panic(cleanup)
+					}
+					w.Write([]string{strconv.Itoa(rep), work, design, ns, strconv.Itoa(r.Pushes), fmt.Sprintf("%.6f", r.Seconds), fmt.Sprintf("%.2f", r.PushesSec), strconv.FormatInt(r.Conflicts, 10), fmt.Sprintf("%.3f", r.ConflictPct), fmt.Sprintf("%.4f", r.RetriesPerPush), fmt.Sprintf("%.3f", r.P50ms), fmt.Sprintf("%.3f", r.P99ms), fmt.Sprintf("%d/%d", r.Verified, r.Pushes)})
+					w.Flush()
+					if w.Error() != nil {
+						panic(w.Error())
+					}
+				}
+			}
+		}
+	}
+}
+```
+
+---
+
+## 7. 实际运行：吞吐之外也要看冲突与长尾
+
+### 7.1 环境与命令
+
+此次环境记录时间是 **2026-11-07 21:17:35 PST（America/Los_Angeles）**。宿主共享环境的负载可能变化，以下不是独占硬件报告。
+
+| 项目       | 实际环境                                                                                    |
+| ---------- | ------------------------------------------------------------------------------------------- |
+| OS         | Linux 6.12.94+，x86_64，KVM 虚拟机                                                          |
+| CPU        | 暴露 8 个逻辑 CPU，`Intel(R) Xeon(R) Processor`，family 6 / model 207；未据此猜具体商品型号 |
+| 内存       | `free -h` 显示总量约 15 GiB，记录时 available 约 2.7 GiB，无 swap                           |
+| 文件系统   | `/tmp` 与 `/workspace` 均位于 `/dev/vdb` 的 ext4；没有把 tmpfs 当磁盘测试                   |
+| Go         | go1.27.3 linux/amd64；运行固定 `GOMAXPROCS=8`                                               |
+| 数据       | 每次 run 6,000 个成功 push；每个 commit 含 1,024 字节 payload，JSON/parent/ID 为额外开销    |
+| 并发与重复 | N=1、8、32；same / distinct 各自独立；两设计；3 次重复，共 36 个 run                        |
+
+```bash
+cd /workspace/blog/rubicon-go-lab
+go test -v ./...
+go test -race ./...
+go vet ./...
+go build -o lab .
+GOMAXPROCS=8 ./lab -pushes 6000 -workers 1,8,32 -repeats 3 -payload 1024 \
+  > results.csv 2> benchmark-meta.txt
+python3 summarize.py
+```
+
+测试与 race 检查单独运行，性能实验使用普通构建，不带 race instrumentation。环境留在 `machine.txt`，每一轮原始输出留在 `results.csv`。正式运行前另做过 1,200 push/run 的冒烟实验，保留为 `pilot-results.csv`，**不混入下表统计**。
+
+### 7.2 指标怎样算
+
+| 指标         | 分母与计时边界                                                                                                         |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| pushes/s     | 6,000 个成功逻辑 push / 本轮 wall time；从释放所有 worker 的 start gate 到 `WaitGroup` 结束                            |
+| latency      | 单个逻辑 push 从尝试前到成功的时长，含整仓锁排队或 CAS 全部重试、文件/目录 fsync；不把每个失败 attempt 当一个独立 push |
+| p50 / p99    | 将本轮全部 6,000 个逻辑 push latency 排序，使用 nearest-rank 分位数                                                    |
+| conflicts    | CAS 发现 head 已不是预期 old 的失败 attempt 数；I/O 错误直接终止，不计为可重试冲突                                     |
+| conflict %   | conflicts / (6,000 + conflicts) × 100%，是 attempt 冲突率，不是失败的最终 push 比例                                    |
+| retries/push | conflicts / 6,000，每个成功逻辑 push 的平均额外尝试数                                                                  |
+| verified     | 校验通过的 ack 数 / 期望成功数；验证和临时目录清理都在性能计时之外                                                     |
+
+对象 hash、编码、fsync、CAS 和重试都在计时内；创建存储根目录、最终全量读取验证、删除实验文件不在计时内。每个 worker 闭环地一次只做一个 push，没有额外开放式到达流量；延迟不能外推为任意请求速率下的服务 SLA。
+
+不同 refs 仍共享本地目录、块设备、文件系统 journal 和 CPU；此处消除的是应用层整仓锁，不是所有资源争用。没有网络、pack indexing、对象连通性验证、复制多数派或 compaction/GC 成本。
+
+### 7.3 三次重复的汇总
+
+下表每一列各取三次运行的中位数；**p99 一列是「三次 p99 的中位数」，不是把 18,000 条 latency 合并重算的分位数**。各列中位数也不一定来自同一轮。
+
+| 场景     |   N | 设计      | pushes/s | conflict % | retries/push | p50 ms |  p99 ms |
+| -------- | --: | --------- | -------: | ---------: | -----------: | -----: | ------: |
+| same     |   1 | repo-lock |  4064.82 |      0.000 |       0.0000 |  0.214 |   0.819 |
+| same     |   1 | per-ref   |  3953.91 |      0.000 |       0.0000 |  0.234 |   1.208 |
+| same     |   8 | repo-lock |  3702.43 |      0.000 |       0.0000 |  1.764 |   6.850 |
+| same     |   8 | per-ref   |  1789.75 |     86.051 |       6.1692 |  0.603 |  41.948 |
+| same     |  32 | repo-lock |  3936.81 |      0.000 |       0.0000 |  7.090 |  20.324 |
+| same     |  32 | per-ref   |   858.12 |     93.562 |      14.5320 | 20.547 | 198.407 |
+| distinct |   1 | repo-lock |  3888.87 |      0.000 |       0.0000 |  0.214 |   1.199 |
+| distinct |   1 | per-ref   |  4087.88 |      0.000 |       0.0000 |  0.202 |   0.819 |
+| distinct |   8 | repo-lock |  4072.84 |      0.000 |       0.0000 |  1.736 |   7.047 |
+| distinct |   8 | per-ref   | 12103.22 |      0.000 |       0.0000 |  0.589 |   1.317 |
+| distinct |  32 | repo-lock |  4397.06 |      0.000 |       0.0000 |  6.760 |  18.106 |
+| distinct |  32 | per-ref   | 15216.48 |      0.000 |       0.0000 |  1.988 |   4.579 |
+
+### 7.4 原始输出与校验结果
+
+以下是正式运行的完整 CSV，不挑最好的一次。每条 `verified=6000/6000` 表示该轮执行了上述日志、ack、对象哈希与先同步后发布检查。36 个 run 共确认并验证 **216,000 个逻辑 push**，不含被 CAS 拒绝的尝试。
+
+```csv
+rep,scenario,design,N,pushes,seconds,pushes_s,conflicts,conflict_pct,retries_push,p50_ms,p99_ms,verified
+1,same,repo-lock,1,6000,1.476082,4064.82,0,0.000,0.0000,0.214,0.819,6000/6000
+1,same,per-ref,1,6000,1.517487,3953.91,0,0.000,0.0000,0.214,1.208,6000/6000
+1,same,repo-lock,8,6000,1.706233,3516.52,0,0.000,0.0000,1.850,9.548,6000/6000
+1,same,per-ref,8,6000,3.352430,1789.75,37287,86.139,6.2145,0.603,42.109,6000/6000
+1,same,repo-lock,32,6000,1.417033,4234.20,0,0.000,0.0000,7.006,20.324,6000/6000
+1,same,per-ref,32,6000,6.477207,926.33,87192,93.562,14.5320,19.289,178.915,6000/6000
+1,distinct,repo-lock,1,6000,1.542864,3888.87,0,0.000,0.0000,0.214,1.199,6000/6000
+1,distinct,per-ref,1,6000,1.330885,4508.28,0,0.000,0.0000,0.198,0.819,6000/6000
+1,distinct,repo-lock,8,6000,1.616458,3711.82,0,0.000,0.0000,1.899,8.557,6000/6000
+1,distinct,per-ref,8,6000,0.463125,12955.47,0,0.000,0.0000,0.584,1.729,6000/6000
+1,distinct,repo-lock,32,6000,1.364549,4397.06,0,0.000,0.0000,6.760,17.138,6000/6000
+1,distinct,per-ref,32,6000,0.394309,15216.48,0,0.000,0.0000,1.975,4.579,6000/6000
+2,same,per-ref,1,6000,1.488768,4030.18,0,0.000,0.0000,0.234,0.951,6000/6000
+2,same,repo-lock,1,6000,1.515049,3960.27,0,0.000,0.0000,0.220,0.968,6000/6000
+2,same,per-ref,8,6000,3.292368,1822.40,37015,86.051,6.1692,0.590,41.948,6000/6000
+2,same,repo-lock,8,6000,1.443719,4155.93,0,0.000,0.0000,1.705,5.662,6000/6000
+2,same,per-ref,32,6000,7.056737,850.25,86611,93.521,14.4352,21.484,201.344,6000/6000
+2,same,repo-lock,32,6000,1.524075,3936.81,0,0.000,0.0000,7.090,35.864,6000/6000
+2,distinct,per-ref,1,6000,1.467754,4087.88,0,0.000,0.0000,0.202,0.788,6000/6000
+2,distinct,repo-lock,1,6000,1.445136,4151.86,0,0.000,0.0000,0.205,1.044,6000/6000
+2,distinct,per-ref,8,6000,0.522806,11476.54,0,0.000,0.0000,0.589,1.317,6000/6000
+2,distinct,repo-lock,8,6000,1.398670,4289.79,0,0.000,0.0000,1.707,5.874,6000/6000
+2,distinct,per-ref,32,6000,0.392210,15297.94,0,0.000,0.0000,1.988,4.141,6000/6000
+2,distinct,repo-lock,32,6000,1.343606,4465.60,0,0.000,0.0000,6.565,18.106,6000/6000
+3,same,repo-lock,1,6000,1.302051,4608.11,0,0.000,0.0000,0.197,0.789,6000/6000
+3,same,per-ref,1,6000,1.712469,3503.71,0,0.000,0.0000,0.241,1.386,6000/6000
+3,same,repo-lock,8,6000,1.620559,3702.43,0,0.000,0.0000,1.764,6.850,6000/6000
+3,same,per-ref,8,6000,3.368738,1781.08,36965,86.035,6.1608,0.608,41.007,6000/6000
+3,same,repo-lock,32,6000,1.553271,3862.82,0,0.000,0.0000,7.230,17.043,6000/6000
+3,same,per-ref,32,6000,6.992000,858.12,87487,93.582,14.5812,20.547,198.407,6000/6000
+3,distinct,repo-lock,1,6000,1.760120,3408.86,0,0.000,0.0000,0.224,1.297,6000/6000
+3,distinct,per-ref,1,6000,1.674838,3582.44,0,0.000,0.0000,0.228,1.257,6000/6000
+3,distinct,repo-lock,8,6000,1.473173,4072.84,0,0.000,0.0000,1.736,7.047,6000/6000
+3,distinct,per-ref,8,6000,0.495736,12103.22,0,0.000,0.0000,0.633,1.316,6000/6000
+3,distinct,repo-lock,32,6000,1.715681,3497.15,0,0.000,0.0000,8.396,21.356,6000/6000
+3,distinct,per-ref,32,6000,0.454471,13202.16,0,0.000,0.0000,2.419,4.755,6000/6000
+```
+
+---
+
+## 8. 怎样解释这组结果，才不把实验写成宣传
+
+### 8.1 分支独立时，整仓锁制造了不必要的排队
+
+N=8、distinct 场景，按 ref 方案中位吞吐 **12,103.22 push/s**，整仓锁 **4,072.84 push/s**；N=32 时分别为 **15,216.48** 与 **4,397.06 push/s**。对应 N=32 的 p99 中位数是 **4.579 ms** 与 **18.106 ms**。
+
+这说明本实现中，没有逻辑冲突的工作可以重叠：一个 writer 同步对象时，另一个 writer 不必因为整仓锁而停住。它没有说明本地磁盘变成了无限并行设备，也没有证明「每增加一个 goroutine 就线性扩容」。N=8 到 N=32 的增长已经小于 4 倍，实际还受 CPU、目录与设备等共享资源影响；本文没有 profile 足以把瓶颈精确归因给其中某一项。
+
+### 8.2 所有写者争同一 ref，乐观并发可能更慢
+
+N=32、same 场景恰好相反：按 ref 中位吞吐 **858.12 push/s**，整仓锁 **3,936.81 push/s**。按 ref 的 attempt 冲突率中位数 **93.562%**，平均每个成功 push 多出 **14.5320 次尝试**；p99 中位数 **198.407 ms**，而整仓锁是 **20.324 ms**。
+
+这不是 Rubicon 失效的证据。它首先说明了自己的模型：所有写者先花成本生成并同步对象，再去竞争同一个 head；输家重新挂 parent、重写对象，留下不可达对象。大多数已花掉的准备工作不能转化为成功。整仓锁虽然也串行，但避免了这批浪费。还要注意基线与对照的策略并不对称：整仓锁把对象写入与 fsync 也包在锁内，而按 ref 方案在冲突后不退避、立即重写并重新 fsync 整个 1,024 字节 payload 的 commit。因此 858.12 对 3,936.81 反映的是**这组锁范围与重试策略的组合**，不是「按 ref CAS 天生比整仓锁慢」；换成退避、排队或复用内容对象，结果可能不同，本文没有测。
+
+N=8、same 时也有一个提醒：按 ref 的 p50 是 **0.603 ms**，小于整仓锁的 **1.764 ms**，但 p99 是 **41.948 ms**，反而高于整仓锁的 **6.850 ms**。只展示中位延迟，会藏掉输掉多次竞争的长尾。
+
+官方专门说 agents 多数推自己的 branches；这正是减少 ref 竞争的工作负载前提，而不是对同一个热门 ref 的无限并发承诺。**仓库级并行空间和单 ref 的冲突空间是两回事。**
+
+### 8.3 0% conflict 不意味着性能已经等价
+
+distinct 两个设计均为零冲突，但整仓锁仍需排队；same 的整仓锁也为零冲突，却没有让对象写入并行。conflict 指标只描述乐观尝试被拒绝的比例，不能替代锁等待时间、CPU 与 I/O 利用率。
+
+本实现没有 backoff、重试上限或饥饿保证。此次有限运行全部完成，不代表极端持续流量下每个 writer 都必然及时成功。实际工程可以研究热点排队、退避、客户端合并或分支工作流，但这些是本文提出的后续方向，**不是我已核验 Rubicon 采用的策略**。
+
+### 8.4 为什么不能拿 15,216.48 与 7,200 排名
+
+本文只有本地小 JSON、单机 fsync、内存 ref 日志，没有 quorum、网络、真实 packs、权限、connectivity checks、读流量、compaction 或 GC；GitHub 的数值是另一套系统的内部测试。二者没有共同的硬件、数据集和 durability contract。
+
+尤其是：**本实验只保证对象在引用发布前调用并成功完成文件及目录同步；ack 的 ref 日志本身不持久，进程崩溃后会丢失全部引用状态。** `Verify()` 证明的是：**在同一个进程内**，所有已确认更新都在日志里、没有被覆盖、且发布前对象已同步；它不证明崩溃或重启后的恢复，也不涉及分布式一致性。因而它根本不是一个「已确认 push 可跨崩溃恢复」的 Git 服务，不能与 Ref-CAS 的复制持久性等量齐观。
+
+此外，三次重复不构成严格的置信区间。distinct、N=32 的按 ref 吞吐范围是 **13,202.16–15,297.94 push/s**，且 N≥8 的 distinct 按 ref run 每轮只有约 0.39–0.52 秒，计时短、受抖动影响更大。共享主机、缓存与同步合并效应都可能影响结果；中位数是描述这次实际运行，不是承诺别人机器跑出相同值。
+
+---
+
+## 9. 我的看法
+
+1. **最值得借鉴的是缩小必须达成一致的状态，不是换一个 Blob 品牌。** GitHub 没有为全部对象搬运建立同等强度的协调，而是在对象 durable 之后，集中发布小而关键的 refs 与 manifest。这个分界比「上云之后就扩容」更有解释力。
+
+2. **按 ref 并行是一种语义优化，也是一种负载假设。** 独立分支可以发挥并发，同一个 ref 的不同预期更新仍需要裁决。本文的反例比一个漂亮的最高吞吐更重要：多 goroutine 并不能把冲突消掉，只可能更快地制造需要重做的工作。
+
+3. **维护路径必须跟上发布路径。** 小 pack 越写越多，读成本会反噬吞吐。Rubicon 的独立 compaction fleet、shard leases、先加输出后移除输入，把整理从请求节点里拆出来；这与 Ref-CAS 同样是架构的核心，不是可有可无的后台脚本。
+
+4. **不可变对象不是事务的替代品。** manifest 与 refs 的同事务发布、落后 replica 的版本检查、维护结果的可见性，都需要明确协议。只展示一个并发对象上传 demo，然后宣称复现 Rubicon，会遗漏最难的边界。
+
+5. **我的实验验证的是更新语义和锁范围的代价，不是云存储系统。** 36 轮都通过 6,000/6,000 的校验，是本次程序实际完成的事实；没有分布式副本、持久 ref WAL 或故障注入同样是事实。若继续做，应该先补可恢复日志与故障测试，再讨论多节点复制，而不是给当前数字贴上生产级标签。
+
+---
+
+## 参考
+
+- [GitHub：Inside GitHub’s new Git storage architecture（2026-11-05，Karthik Raman / Brian Celenza）](https://github.blog/engineering/architecture-optimization/inside-githubs-new-git-storage-architecture/)——已阅读全文；本文所有 Rubicon 官方架构、数字、原型取舍、compaction 流程、preview 状态与路线图的唯一来源。文章未公开的测试配方、共识算法和 GC 安全细节均没有自行补齐。
+- [Go 标准库：os](https://pkg.go.dev/os)——代码使用 `CreateTemp`、`Link`、`File.Sync` 等接口；本文的实现与本机测试不代表 GitHub 的实现。
+- 本文附带的可复现实验：`rubicon-go-lab/lab.go`、`main.go`、`lab_test.go`、`summarize.py`；实际测量见 `results.csv`、`benchmark-meta.txt`、`machine.txt`。这些是作者自己的教学材料，不是 Rubicon 官方代码。

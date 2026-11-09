@@ -1,0 +1,618 @@
+---
+title: "Agent Memory：把在线笔记、离线 dreaming 和上下文注入拆开——附一个真的跑过的记忆闭环"
+description: "Anthropic 在 2026-11-06 发布的《The components of agent memory》把长期记忆拆成在线记录、离线 dreaming 校验、wiki 表示与会话注入层。本文沿 CL-Bench、Pokémon、Stainless 与 Harvey 案例解释各层解决什么问题、不能证明什么，并用 Python 跑一个确定性的合成记忆闭环：完整原始笔记答对 5/10，同一头部截断规则下答对 3/10，索引配合按需读取答对 10/10；其中 269 字节只是启动注入的索引，10 题另外累计按需读取 872 字节。整理纠正 4 条植入错误、未丢失 5 条原本正确的笔记事实。这是规则驱动的合成样例，不是官方 dreaming 或真实模型效果的复现，字节数也不等于 token。"
+date: "2026-11-06"
+author: "Lios09"
+tags:
+  - agent-memory
+  - context-engineering
+  - dreaming
+  - retrieval
+  - python
+  - evaluation
+category: "Machine Learning"
+published: true
+featured: false
+---
+
+## 1. 一句话版本：记忆不是一份越来越长的总结
+
+Agent 的记忆系统不只要回答「把什么存起来」，还要回答：谁验证它、如何处理过期、什么值得常驻上下文、什么应该等问题来了再找。
+
+[Anthropic 原文](https://www.anthropic.com/research/components-of-agent-memory)把 agent memory 定义为：从用户交互和任务经验中获得、以以后可以读取的上下文形式跨会话保存的知识。它明确排除了模型权重更新、单个对话内的 in-context learning，以及为了继续当前工作而替换旧轮次的 compaction。
+
+本文讨论的 dreaming，是**利用会话之外的计算整理外部记忆**，不是让模型睡一觉再训练，也不是凭空生成想象中的事实。原文由 Lance Martin 撰写，归在 Engineering；下文的官方评测均转述自这篇文章，我没有运行那些模型或私有语料。
+
+```text
+在线会话
+  observations / actions / user feedback
+       |                         |
+       v                         v
+  append-only transcript    provisional notes
+       |                         |
+       +------------+------------+
+                    v
+          offline dreaming / consolidation
+           verify -> correct -> merge -> link
+                    |
+          +---------+----------+
+          v                    v
+       topic wiki       small MEMORY.md index
+          ^                    |
+          |                    v
+          +-- on-demand -- next session context
+```
+
+这里的闭环不是「写入成功」，而是：**下一次能够找到相关知识，知道它凭什么成立，并在证据改变时修正它。**
+
+---
+
+## 2. 在线笔记与离线 dreaming：两种不同的工作
+
+### 2.1 在线记录负责抓住现场，离线整理负责回看全局
+
+会话中的 agent 最清楚当前任务发生了什么，但同时还要完成任务；它不知道未来会问什么，也容易把当时的猜测误记为事实。离线整理则可以跨会话比较记录、追溯原始证据、合并重复页，代价是额外计算与更新延迟。
+
+| 层              | 应承担的工作                       | 不应默认成立的假设       |
+| --------------- | ---------------------------------- | ------------------------ |
+| 原始 transcript | 保存观察、动作、反馈和来源         | 日志里的每句话都是真相   |
+| 在线 notes      | 记录当下重要发现、未决问题和下一步 | 当时写下的判断已经被验证 |
+| 离线 dreaming   | 回查证据、纠错、改写表示、修复链接 | 离线重写天然比原笔记可靠 |
+| Wiki / 索引     | 为未来任务提供导航和抽象           | 页面越多越完整、越有用   |
+| 注入层          | 提前提供必要背景和检索入口         | 进入上下文就必然会被遵循 |
+
+这也是工程上的取舍：把全部记忆创建推到后台，会使刚刚学到的知识不能立刻服务下一轮；把所有整理都放在前台，又会把完成任务的时间花在维护目录上。原文把这个时机问题列为开放问题，没有给出通用的 dreaming 周期。
+
+### 2.2 CL-Bench：真正有价值的是带验证的规则
+
+原文选取 CL-Bench 1.0 的一个数据库问答任务：每道题在新 session 开始，回答后得到正确解；跨会话只保留 memory directory。它不是把整段历史重新塞回上下文。
+
+不同模型写出来的记忆体现了不同程度的闭环：
+
+| 模型                  | 原文观察                                                               |
+| --------------------- | ---------------------------------------------------------------------- |
+| Sonnet 4.6            | 写下为什么答错的理论，文件里仍是未测试猜测                             |
+| Opus 4.7              | 整合为参考文档，区分已核实与未确认内容                                 |
+| Sonnet 5              | 根据 grader 确认答案，答错时补纠正                                     |
+| Opus 5                | 形成规则、规则成立的依据、历史答案和陷阱警告                           |
+| Opus 5.5 / Sonnet 5.5 | 同样形成经过验证的规则；有记忆时得分与 Opus 5 大致相当，无记忆基线略高 |
+
+**「出现过」和「可复用」不是同一件事。** 保存一条失败案例，只能提醒下一次可能出错；验证一个解释后形成规则，才可能改变下一次的决策过程。
+
+原文还做了提示干预：告诉 Sonnet 4.6 回答前先读记忆、明确测试自己的理论，得分接近翻倍；Sonnet 5 不经这种额外提示也会在十次中的九次先读取记忆，Sonnet 4.6 则不到一半。这里的「接近翻倍」是原文表述，我没有从图中估读绝对分数。
+
+但给更强模型规定「只记录失败」，反而让 Opus 5 与 Opus 4.7 丢掉了很大一部分记忆收益。原文的建议是说明记忆的用途，而不是预先锁死所有写入规则。
+
+我的理解是：**显著性判断属于能力的一部分，而不只是数据库 schema 的问题。** 固定模板可以保证审计字段齐全，却不能保证写下的内容对未来有用。后面的规则脚本只演示管线，不验证这项能力。
+
+---
+
+## 3. Pokémon：记得多，为什么反而走得慢
+
+### 3.1 把可观测状态抄一遍，不一定是在积累知识
+
+原文比较 Sonnet 3.7 与 Fable 5 各一次 Pokémon Red 运行，观察点约在游戏进行到 10,000 步时：
+
+| 模型       | 记忆组织                                      | 游戏进度 |
+| ---------- | --------------------------------------------- | -------- |
+| Sonnet 3.7 | 225 个文件夹内的 413 个记忆文件               | 1 枚徽章 |
+| Fable 5    | 2 个文件夹内的 9 个文件，另有顶层 `global.md` | 4 枚徽章 |
+
+Sonnet 3.7 频繁记录每场战斗、物品、NPC，以及会不断变化的状态。约在第 10,000 步，它开始建立第四个「master」目录，接下来 17 步创建了 6 个文件、删除了 9 个文件，却没采取游戏动作。
+
+Fable 5 的 `global.md` 更像仪表盘：当前目标、挑战道馆的计划、自己的记忆使用规则；其他文件按地点与玩法组织。它优先保存策略和经过探索才获得的知识，而不是每轮都能从屏幕重新读到的钱数或当前位置。原文还报告 Opus 5.5 使用相似的小型、持续更新的记忆组织，最终通关。
+
+这不是「文件少所以模型强」的因果证明：比较中模型不同，而且前两个模型各只展示一次运行。它支持的是一个具体的失败模式——**记忆维护与任务推进竞争，陈旧状态又会继续增加维护成本。**
+
+### 3.2 地标写错：检索越可靠，错误也可能传播得越可靠
+
+Mt. Moon 的入口在西侧、出口在东侧，入口附近有一个只能向下跳的 ledge。Claude 错把入口处的 PokéCenter 记在东侧，于是把走出 PokéCenter 当作已经穿过山洞。
+
+错误并没有被后续动作自动纠正：导航工具没有显示跳落过程，Claude 反而把回到旧路线解释为自己向西走过头，继续维护「已经过山」这个判断。
+
+原文测试了针对这份记忆的 dreaming：回查 transcript，发现地标方位错了，重写笔记。修正后 Claude 回到洞口，最终抵达 Cerulean City；未修正记忆的运行连续三次落回旧路线，直到结束也没抵达目标；无记忆的对照同样没有越过山洞。
+
+关键差别不是回答时再调用一个更强的检索器，而是检索到的**那条持久事实被修正了**。
+
+原文称 transcript 在该案例中提供了验证记忆的 ground truth。落到自己的系统里，应更谨慎：transcript 也可能记录工具漏报、agent 的误解或第三方恶意文本。我的建议是把记录拆成观察、推断和反馈，保留来源、有效范围及验证状态；不要把一段 agent 自述当作比原始证据更高等级的真相。
+
+---
+
+## 4. Wiki：不只是摘要，而是为未来问题建立知识地图
+
+### 4.1 Stainless：结构化表示与原始搜索是互补的
+
+原文用 Stainless 的内部文档测试 wiki：约 350,000 个文件、约 420M tokens，评测集为 25 道问题。Opus 5 agents 在相继进行的 dreaming sessions 中探索文件、写或纠正链接页、合并重复、回查来源，通过共享日志协调工作。
+
+| 使用方式                                        | 原文结果                        | 应怎样读                       |
+| ----------------------------------------------- | ------------------------------- | ------------------------------ |
+| 只用 wiki，dreaming 从 2 次 session 扩到 128 次 | graded criteria 从 13% 增至 48% | 不是「25 道题中答对比例」      |
+| Wiki + search，随着 wiki 增长                   | aggregate score 从 54% 增至 61% | 同时具备导航与下钻原文能力     |
+| 只有 search                                     | 53%                             | 搜索本身是有竞争力的基线       |
+| Wiki + search                                   | 每题约节省 20,000 tokens        | 原文给出的近似数，不是本文实测 |
+
+这里的 2→128 是 successive sessions，不应改写成模型训练步数；13%→48% 也不应宣传成所有企业知识问答都能得到同样提升。
+
+Wiki 真正提供的是预先做过的关联：一个概念涉及哪些系统、哪些页面需要一起看、哪个结论依赖什么来源。搜索则让 agent 在地图不够细时返回证据。**表示不是原文的替代品，而是到原文的路线。**
+
+### 4.2 不是所有任务都需要这层地图
+
+在一组并购材料的 24 道问题里，原文说明超过半数问题需要跨文档信息，很多还需要判断或计算。在那些需要整合的项目上，wiki 得分 87%，search alone 为 73%。不能把这两个数说成全部法律任务的总体结果。
+
+另一个 Harvey LAB 任务，大部分 brief criteria 从单个文档文本搜索即可满足，wiki 没有明确收益。再一个任务中，wiki 甚至比原始材料还大：它没有形成有效抽象，只是另做了一份更臃肿的副本。
+
+因此，是否建设 wiki 应由任务决定：
+
+- 跨文档、多跳关系、反复要用的解释，适合做主题页。
+- 一次性的单文档定位，直接搜索可能已经足够。
+- 合同条款、配置常量、接口字段等对精确性敏感的内容，不应为了「更像总结」而牺牲原文。
+
+### 4.3 Harvey：72%→100% 的背后同时改了任务指令与写入拓扑
+
+原文的一个 LAB 收购任务对合同条款高度敏感。最初的 wiki 指令没有强调该用途，多个 agent 同时向共享条款表写入：摘要丢掉细节，写入之间还互相覆盖。
+
+原文正文说，从这个 wiki 生成的 brief 只包含 57 项事实中的 41 项，即 72%。Figure 14 的说明也将改进前后写作 41/57 与 57/57 项事实保留下来。通过分析失败、修改建 wiki 的指令、重建 wiki，改进版变成：
+
+```text
+原方式
+  agent A ----+
+  agent B ----+--> shared contract summary table
+  agent C ----+         |
+                        +--> omission / overwritten updates
+
+改进方式
+  agent A --> contract A page --+
+  agent B --> contract B page --+--> links / downstream brief
+  agent C --> contract C page --+
+              verbatim terms
+```
+
+每份合同一页、由单个 agent 负责，条款逐字引用，不再把一切挤进共享摘要表。原文对改进后 brief 的措辞是 **100% 的 criteria 可以被满足**，从 72% 提升而来；这不是对整个 Harvey LAB 的统一 100% 正确率承诺。
+
+这个案例说明两个问题不能混为一谈：**摘要有没有保留任务需要的事实，以及并发写入有没有丢更新。** 换模型也不能代替正确的文件所有权和提交协议。
+
+原文还展示第二次 dreaming 修补图结构的案例：在一个任务中发现 9 个指向缺失页的链接，把它们改指向同文档的现存页面，并新增包含索引在内的 3 个页面。维护链接本身就是记忆整理的一部分。
+
+---
+
+## 5. 注入层：最贵的不是存下来，而是每轮都带进来
+
+### 5.1 `MEMORY.md` 是入口，不是仓库
+
+原文与本次打开的 [Claude Code memory 文档](https://code.claude.com/docs/en/memory)一致：每次对话启动，只加载 `MEMORY.md` 的**前 200 行或前 25KB，以先到者为准**。主题文件不会在启动时全部加载，需要时才通过普通文件工具读取。
+
+| 文件或层级                 | 启动加载方式                       | 容易误解的地方                         |
+| -------------------------- | ---------------------------------- | -------------------------------------- |
+| Auto memory 的 `MEMORY.md` | 头部受 200 行 / 25KB 限制          | 文件写入成功不等于尾部进了下一轮上下文 |
+| Auto memory 的 topic files | 按需读取                           | 内容保留在磁盘不等于模型已经知道       |
+| `CLAUDE.md`                | 有自己的加载规则；文档建议保持简短 | 不应把 auto memory 的硬截断直接套给它  |
+
+文档还明确：这些内容是上下文，不是强制执行的配置；需要硬性阻止操作时，应使用相应的 hook 或权限机制。文档关于长指令降低遵循程度的提醒，也不能简单理解成「只要压到限制以内就一定服从」。
+
+头部截断会把**排序**变成语义问题：如果检索入口被重复流水挤到文件尾，主题页即使完整存在，下次会话也可能不知道该去哪里读。
+
+### 5.2 预算不是越用满越好
+
+我建议常驻层优先承担三件事：当前目标、必要的已验证约束、主题导航。长证明、历史记录和精确材料下沉到主题页，主题页再链接来源。
+
+预算应该同时包含：
+
+- 启动注入：每轮固定支付的上下文成本。
+- 按需读取：回答问题额外支付的文档成本。
+- 离线维护：整理、验证、重建索引的计算与存储成本。
+
+只报告索引很短，却不算读取主题页的费用，会把「延迟加载」写成「免费知识」。
+
+### 5.3 三种产品表面不要混为一谈
+
+本文打开的相关文档还区分了：
+
+- [Memory tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool)：模型请求文件操作，由你的应用在客户端执行；持久化与路径安全由应用负责。
+- [Managed Agents memory stores](https://platform.claude.com/docs/en/managed-agents/memory)：以目录形式供 session 使用的持久存储；文档提供版本审计，以及基于内容哈希前置条件的乐观并发控制。
+- Claude Code auto memory：上面的 `MEMORY.md` 索引和按需主题文件机制。
+
+200 行 / 25KB 是这里已核实的 **Claude Code auto memory 注入限制**，不是所有 memory tool 或 store 都共享的协议。
+
+---
+
+## 6. 实测：一个确定性的最小记忆闭环
+
+**自己写的示意实验，非官方实现。** 我实际在本机用 Python 运行了下面的完整脚本，没有调用任何付费 API，也没有使用用户真实会话或私有数据。
+
+实验要验证的不是模型会不会判断显著性，而是更窄的几个问题：
+
+1. 对照来源纠错、去重和构建主题页之后，原本正确的事实会不会丢？
+2. 同一个头部预算下，原始笔记和索引各自能让下轮看到什么？
+3. 索引只有路径而没有事实时，必须按需读取，还是也能凭空回答？
+
+### 6.1 数据与规则：刻意植入错误，也刻意制造一次头部拥塞
+
+合成日志模拟一个涉及 Go 服务、前端与 AI 功能的小项目。三个 session 向 transcript 与 notes 的 JSONL 文件追加记录。每条证据是结构化字段，不需要自然语言理解。
+
+| 项目               | 本实验设定                                        |
+| ------------------ | ------------------------------------------------- |
+| 已有证据的事实     | 9 个不同 key                                      |
+| 植入错误           | 请求超时、重试范围、退出等待、日志保留期，共 4 条 |
+| 原本正确的笔记事实 | 5 条                                              |
+| 无来源断言         | 1 条关于 PII 的断言，正确评估行为是拒答           |
+| 重复噪声           | 额外追加 210 条相同健康检查记录                   |
+| 原始笔记总量       | 220 条                                            |
+| 主题               | `go`、`frontend`、`ops`、`ai`                     |
+
+例如，合成工具记录给出 `go.timeout=30s`，笔记却写成 `300s`。这些值只是测试夹具，**不是 Go 默认设置或生产配置建议**。重复健康检查是人为设置的压力条件，目的就是让后写入的事实越过头部限制，不能把收益幅度当作真实会话的分布统计。
+
+离线规则如下：
+
+- 对完全相同的 `(topic, key, value, source)` 去重。
+- 只认本实验预设可信的、带 `verified` 标记的 tool/user 记录；根据来源 ID、topic 与 key 对齐。
+- 值与该证据不一致就纠正，记录 old/new/source 审计条目。
+- 找不到来源就隔离，不把猜测提升为事实。
+- 每个 topic 建一个 wiki 页，索引只列主题、路径与 key，不写答案。
+- 下一轮只注入索引头部，查询时按 key 找主题页读取。
+
+它没有实现通用的时间冲突消解：如果一个配置真正发生变化，不能仅凭旧笔记指向的旧证据判定新旧。这里每个 key 只有一个可信事实，明确排除了这个难题。
+
+### 6.2 评估口径：同样的题，区分检索与答对
+
+题集有 10 个问题：9 个有来源答案、1 个应拒答。问题到 key 的映射是人工写好的，答案来自取到的 `FACT` 行；**没有测试语义检索、自然语言推理或 LLM 作答能力**。
+
+| 指标                    | 定义                                                                   |
+| ----------------------- | ---------------------------------------------------------------------- |
+| Accuracy                | 10 道题中取值完全一致，或对无证据题返回 `None`                         |
+| Evidence hit            | 9 道可回答题中取到正确事实的比例；此确定性管线里它与这些题的答对数重合 |
+| Fixes                   | 4 个植入错误中，最终读取结果被纠正的数量                               |
+| True facts lost         | 原始笔记中 5 条正确事实，有多少在当前策略可读取的结果里缺失或变错      |
+| Transcript facts lost   | 9 条来源事实，有多少没保留到最终 wiki                                  |
+| Injected bytes / tokens | 只计会话启动时载入的文本；主题页读取另计                               |
+
+因此这里的 evidence hit 是非常窄的「正确证据命中率」，不是通用检索器的 Recall@K 排名基准。`index-only` 行的事实损失是**当前可见信息**的损失，不表示磁盘上的 wiki 被删除。
+
+`head_only()` 同时执行前 200 行和前 25,000 字节限制。我在示例中明确采用十进制 KB，并避免截坏 UTF-8 字符；官方文档写的是 25KB，本文未验证 Claude Code 底层按十进制还是二进制计数，也未声称逐字节复刻其加载器。本实验数据首先触发行数限制，不受这个差异影响。
+
+Token 数用本地 `tiktoken` 的 `cl100k_base` 实际编码计数，**只是统一代理口径，不是 Claude 的 tokenizer 或 API 计费数**。代码另有行数、字节数、中文截断边界断言。
+
+### 6.3 完整代码
+
+将下面保存为 `memory_loop.py`。实验临时目录会在运行结束后清理；不需要预先准备数据，整个数据生成、会话追加、离线整理、检索和评估都包含在脚本里。
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install tiktoken==0.14.0
+.venv/bin/python memory_loop.py
+```
+
+首次取得公开分词表可能需要联网，但不需要 API key。实验的规则处理本身不调用网络模型。
+
+```python
+# 自己写的示意实验，非官方实现；仅处理本脚本约定的结构化证据。
+import json
+import re
+import tempfile
+from pathlib import Path
+from importlib.metadata import version
+import tiktoken
+
+ENC = tiktoken.get_encoding('cl100k_base')  # 代理计数，不是 Claude tokenizer
+LINE_LIMIT, BYTE_LIMIT = 200, 25_000  # 本实验明确采用十进制 KB
+
+
+def head_only(text, lines=LINE_LIMIT, byte_limit=BYTE_LIMIT):
+    data = ''.join(text.splitlines(keepends=True)[:lines]).encode('utf-8')
+    return data[:byte_limit].decode('utf-8', errors='ignore')
+
+
+def measure(text):
+    return len(text.encode('utf-8')), len(ENC.encode(text))
+
+
+def append_json(path, rows):
+    with path.open('a', encoding='utf-8') as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + '\n')
+
+
+def load_json(path):
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def session(root, name, facts, notes):
+    # facts: (topic, key, verified tool/user value, raw note value)
+    transcript, raw = [], []
+    for i, (topic, key, value, note) in enumerate(facts):
+        src = f'{name}:{i}'
+        transcript.append(dict(id=src, role='tool', topic=topic,
+                               key=key, value=value, verified=True))
+        raw.append(dict(topic=topic, key=key, value=note, source=src))
+    raw.extend(notes)
+    append_json(root / 'transcripts.jsonl', transcript)
+    append_json(root / 'notes.jsonl', raw)
+
+
+def render_raw(rows):
+    return ''.join(f"FACT\t{r['key']}\t{r['value']}\t{r['source']}\n" for r in rows)
+
+
+def parse_facts(text):
+    result = {}
+    for line in text.splitlines():
+        fields = line.split('\t')
+        if len(fields) == 4 and fields[0] == 'FACT':
+            result[fields[1]] = fields[2]  # 简单 last-write-wins 基线
+    return result
+
+
+def dream(root):
+    rows = load_json(root / 'notes.jsonl')
+    events = load_json(root / 'transcripts.jsonl')
+    # 本实验只信任带 verified 的 tool/user 记录；真实系统不能信任任意标签。
+    evidence = {e['id']: e for e in events
+                if e['verified'] and e['role'] in ('tool', 'user')}
+    unique, seen = [], set()
+    for row in rows:
+        identity = tuple(row[k] for k in ('topic', 'key', 'value', 'source'))
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(row)
+    pages, corrected, quarantine, audit = {}, 0, [], []
+    for row in unique:
+        event = evidence.get(row['source'])
+        if not event or (event['topic'], event['key']) != (row['topic'], row['key']):
+            quarantine.append(row)
+            continue
+        if row['value'] != event['value']:
+            corrected += 1
+            audit.append(dict(key=row['key'], old=row['value'],
+                              new=event['value'], source=event['id']))
+        pages.setdefault(row['topic'], {})[row['key']] = event
+    wiki = root / 'wiki'
+    wiki.mkdir()
+    index = '# Memory index\nVerified topics; read linked pages on demand.\n'
+    for topic, facts in sorted(pages.items()):
+        page = f'# {topic}\n[Back](../MEMORY.md)\n'
+        for key, event in sorted(facts.items()):
+            page += f"FACT\t{key}\t{event['value']}\t{event['id']}\n"
+        (wiki / f'{topic}.md').write_text(page, encoding='utf-8')
+        index += f"- [{topic}](wiki/{topic}.md): {', '.join(sorted(facts))}\n"
+    (root / 'MEMORY.md').write_text(index, encoding='utf-8')
+    (root / 'audit.json').write_text(json.dumps(audit, indent=2), encoding='utf-8')
+    (root / 'quarantine.json').write_text(json.dumps(quarantine), encoding='utf-8')
+    return index, corrected, len(rows) - len(unique), len(quarantine)
+
+
+def retrieve(root, index, key):
+    for line in index.splitlines():
+        match = re.fullmatch(r'- \[([a-z]+)\]\(wiki/([a-z]+)\.md\): (.+)', line)
+        if match and key in match[3].split(', '):
+            text = (root / 'wiki' / f'{match[2]}.md').read_text()
+            return parse_facts(text).get(key), text
+    return None, ''
+
+
+def main():
+    with tempfile.TemporaryDirectory(prefix='memory-loop-') as tmp:
+        root = Path(tmp)
+        repeat = dict(topic='ops', key='ops.health', value='/healthz', source='s1:3')
+        session(root, 's1', [
+            ('go', 'go.timeout', '30s', '300s'),
+            ('frontend', 'frontend.test', 'pnpm test', 'pnpm test'),
+            ('go', 'go.retry', 'idempotent-only', 'all-posts'),
+            ('ops', 'ops.health', '/healthz', '/healthz'),
+        ], [dict(repeat) for _ in range(210)])
+        session(root, 's2', [
+            ('go', 'go.shutdown', '10s', '60s'),
+            ('frontend', 'frontend.build', 'pnpm build', 'pnpm build'),
+            ('ai', 'ai.retention', '7d', '30d'),
+        ], [])
+        session(root, 's3', [
+            ('ops', 'ops.deploy', 'canary', 'canary'),
+            ('ai', 'ai.embedding', 'local', 'local'),
+        ], [dict(topic='ai', key='ai.pii', value='allowed', source='missing')])
+        # 独立题集只用于评估，不传给 dream()；None 表示正确行为是拒答。
+        questions = [
+            ('Go 请求超时？', 'go.timeout', '30s'),
+            ('前端测试命令？', 'frontend.test', 'pnpm test'),
+            ('哪些请求允许重试？', 'go.retry', 'idempotent-only'),
+            ('健康检查路径？', 'ops.health', '/healthz'),
+            ('优雅退出等待？', 'go.shutdown', '10s'),
+            ('前端构建命令？', 'frontend.build', 'pnpm build'),
+            ('AI 日志保留多久？', 'ai.retention', '7d'),
+            ('部署策略？', 'ops.deploy', 'canary'),
+            ('embedding 在哪里算？', 'ai.embedding', 'local'),
+            ('允许把 PII 写入日志吗？', 'ai.pii', None),
+        ]
+        notes = load_json(root / 'notes.jsonl')
+        raw = render_raw(notes)
+        index, corrected, duplicates, quarantined = dream(root)
+        injected = head_only(index)
+        all_wiki = '\n'.join(p.read_text() for p in sorted((root / 'wiki').glob('*.md')))
+        truth = {key: expected for _, key, expected in questions if expected is not None}
+        original_true = {k for k, v in parse_facts(raw).items() if truth.get(k) == v}
+        final = parse_facts(all_wiki)
+        assert all(final.get(k) == v for k, v in truth.items())
+        assert corrected == 4 and len(original_true) == 5
+        # 截断边界测试；不证明与 Claude Code 的底层实现逐字节一致。
+        assert head_only('x\n' * 201).count('\n') == 200
+        assert len(head_only('x' * 26000).encode()) == BYTE_LIMIT
+        assert head_only('汉' * 10, byte_limit=4) == '汉'
+        print(f'Python local; tiktoken={version("tiktoken")}; encoding=cl100k_base')
+        print(f'sessions=3 notes={len(notes)} duplicates_removed={duplicates}')
+        print(f'corrected={corrected}/4 quarantined={quarantined}')
+        print(f'true_note_facts_lost={sum(final.get(k) != truth[k] for k in original_true)}/{len(original_true)}')
+        print(f'transcript_true_facts_lost={sum(final.get(k) != v for k, v in truth.items())}/{len(truth)}')
+        print('mode | injected_bytes | proxy_tokens | lines | accuracy | evidence_hit | fixes | true_lost | read_bytes | read_proxy_tokens')
+        for mode, text in [('raw-full', raw), ('raw-head', head_only(raw)),
+                           ('index-only', injected), ('index+wiki', injected)]:
+            correct = hits = fixes = read_bytes = read_tokens = 0
+            answers = {}
+            available = parse_facts(text)
+            for _, key, expected in questions:
+                if mode == 'index+wiki':
+                    answer, page = retrieve(root, text, key)
+                    read_bytes += len(page.encode())
+                    read_tokens += len(ENC.encode(page))
+                else:
+                    answer = available.get(key)
+                answers[key] = answer
+                fixes += key in {'go.timeout', 'go.retry', 'go.shutdown', 'ai.retention'} and answer == expected
+                correct += answer == expected
+                hits += expected is not None and answer == expected
+            nbytes, ntokens = measure(text)
+            print(f'{mode} | {nbytes} | {ntokens} | {len(text.splitlines())} | '
+                  f'{correct}/10 | {hits}/9 | {fixes}/4 | '
+                  f'{sum(answers.get(k) != truth[k] for k in original_true)}/5 | '
+                  f'{read_bytes} | {read_tokens}')
+        wiki_bytes = sum(p.stat().st_size for p in (root / 'wiki').glob('*.md'))
+        print(f'wiki_storage_bytes={wiki_bytes}; boundary_tests=PASS')
+        print('question | raw-full | raw-head | index+wiki')
+        for question, key, _ in questions:
+            a = parse_facts(raw).get(key)
+            b = parse_facts(head_only(raw)).get(key)
+            c, _ = retrieve(root, injected, key)
+            print(f'{question} | {a} | {b} | {c}')
+        # 临时目录只用于可重复实验，不读取任何实际用户记忆。
+
+
+if __name__ == '__main__':
+    main()
+```
+
+### 6.4 实际输出
+
+以下照录此次运行输出；`read_bytes` 与 `read_proxy_tokens` 是整套题累计的按需页读取，不含启动注入，也没有页缓存。
+
+```text
+Python local; tiktoken=0.14.0; encoding=cl100k_base
+sessions=3 notes=220 duplicates_removed=210
+corrected=4/4 quarantined=1
+true_note_facts_lost=0/5
+transcript_true_facts_lost=0/9
+mode | injected_bytes | proxy_tokens | lines | accuracy | evidence_hit | fixes | true_lost | read_bytes | read_proxy_tokens
+raw-full | 6593 | 2845 | 220 | 5/10 | 5/9 | 0/4 | 0/5 | 0 | 0
+raw-head | 5999 | 2595 | 200 | 3/10 | 2/9 | 0/4 | 3/5 | 0 | 0
+index-only | 269 | 75 | 6 | 1/10 | 0/9 | 0/4 | 5/5 | 0 | 0
+index+wiki | 269 | 75 | 6 | 10/10 | 9/9 | 4/4 | 0/5 | 872 | 338
+wiki_storage_bytes=380; boundary_tests=PASS
+question | raw-full | raw-head | index+wiki
+Go 请求超时？ | 300s | 300s | 30s
+前端测试命令？ | pnpm test | pnpm test | pnpm test
+哪些请求允许重试？ | all-posts | all-posts | idempotent-only
+健康检查路径？ | /healthz | /healthz | /healthz
+优雅退出等待？ | 60s | None | 10s
+前端构建命令？ | pnpm build | None | pnpm build
+AI 日志保留多久？ | 30d | None | 7d
+部署策略？ | canary | None | canary
+embedding 在哪里算？ | local | None | local
+允许把 PII 写入日志吗？ | allowed | None | None
+```
+
+### 6.5 结果说明：把收益拆开，避免偷换概念
+
+| 策略                            | 启动字节 | 代理 tokens | Accuracy | 正确证据命中 | 纠错 | 当前可读的正确笔记事实损失 |
+| ------------------------------- | -------- | ----------- | -------- | ------------ | ---- | -------------------------- |
+| 原始全部笔记 `raw-full`         | 6593     | 2845        | 5/10     | 5/9          | 0/4  | 0/5                        |
+| 截断后的原始头部 `raw-head`     | 5999     | 2595        | 3/10     | 2/9          | 0/4  | 3/5                        |
+| 只注入索引，不读取 `index-only` | 269      | 75          | 1/10     | 0/9          | 0/4  | 5/5                        |
+| 索引 + 按需读取 `index+wiki`    | 269      | 75          | 10/10    | 9/9          | 4/4  | 0/5                        |
+
+**先看不用截断的基线。** `raw-full` 已经拿到所有原始笔记，但仍有 4 条错误和 1 条无证据断言，答对 5/10。离线整理后变为 10/10，说明本样例的纠错收益不是单靠「多读了尾部」得到的。
+
+**再看相同的头部截断规则。** `raw-head` 与索引都经过同一个 `head_only()`（200 行 / 25,000 字节），但两者实际占用并不相同：`raw-head` 被限制到前 200 行，重复健康检查占据位置，后面的构建、部署、embedding 等事实看不到了。索引启动时只花 269 字节、75 个代理 tokens，相比原始头部的 5999 字节、2595 个代理 tokens 更小，且能把查询路由到对应主题页。注意 269 字节**只是启动注入的索引本身**，不含任何主题页内容；10/10 是「索引 + 按需读取」的结果，不是索引单独做到的。
+
+**但是索引不等于答案。** 禁止读取主题页时，只有无证据题的拒答是正确的，得到 1/10。把这个对照列出来，是为了防止把文件指针解释成模型已经掌握的知识。
+
+**还要付读取费用。** `index+wiki` 在 10 题上累计读取 872 字节、338 个代理 tokens；同一主题页可以被不同问题重复读取，没有缓存。按「每道题独立启动一次会话」计算，总量应是每题 269 字节启动开销再加该题读取，而不是整套题只注入一次。按这个口径用上面的实测数做算术：`index+wiki` 合计 10 × 269 + 872 = 3,562 字节（代理 tokens 10 × 75 + 338 = 1,088）；`raw-full` 为 10 × 6,593 = 65,930 字节（28,450），`raw-head` 为 10 × 5,999 = 59,990 字节（25,950）。这是由同一次输出推算的合计，不是另外测量的数字；字节和 `cl100k_base` 代理 tokens 都不等于 Claude 的 token 或计费。另外，索引行里列出了每个主题的 key，题目到 key 的映射又是人工写好的，所以路由在这里是精确匹配，这对 `index+wiki` 明显有利；真实 agent 需要自己判断该读哪页，可能读错或多读。这里没有计算任何真实 LLM 的调用成本，也没有测量端到端时延。
+
+**纠错没有以丢失好事实为代价。** 完整 wiki 保留了原本正确的 5/5 条笔记事实；对照全部 transcript，9/9 条可信事实也都保留，损失分别为 0/5 与 0/9。无来源的 PII 断言进入隔离区，这属于拒绝无证据提升，不属于丢失已验证事实。主题页实际占用 380 字节，原始 JSONL 并未因为合并而被改写。
+
+最后，这个结果为什么看起来这么好？因为我们人为保证了**来源完整、字段可对齐、错误可判定**，还提前写好了问题到 key 的映射。脚本没有经历真实 agent 的显著性选择与语义歧义，100% 只是这组夹具的结果，不能和官方 CL-Bench、Stainless 或 Harvey 分数比较。
+
+### 6.6 如果换成 LLM dreamer，会多出什么问题
+
+真正的 LLM dreamer 可以从自然语言 transcript 中寻找证据，推断多个笔记是否讲同一件事，形成概念关联，甚至调整记忆组织方式；这些都不是字符串相等判断能够完成的。
+
+代价是它也可能：把相似但不同的事实合并、把不确定性抹掉、引用不存在的来源、生成更好读却更不准确的摘要。我的脚本不具备这些能力，也就没有测量这些风险。把确定性函数替换成模型调用后，至少要重新评估：
+
+- 原始正确事实的保留率，而不只看错误修复数。
+- 没有证据时的拒答，以及错误来源引发的错误纠正。
+- 事实时效与适用范围，而不只做 last-write-wins。
+- 检索成功之后是否真正使用了正确证据。
+- 离线整理消耗的 tokens、时间和回归次数。
+
+本实验中的 `verified=True` 由我们生成，不是模型自己贴个标签就能获得信任。在生产系统中，来源身份与授权边界必须由 harness 或存储层建立。
+
+---
+
+## 7. 设计建议：把 memory 当成可审计的派生数据
+
+下面是我根据原文案例与文档推导的工程建议，不是 Anthropic 发布的标准实现。
+
+### 7.1 原始记录、暂存笔记与发布视图分层
+
+把 transcript 作为可追溯的事件记录，notes 作为可能出错的暂存，wiki 与索引作为可重建的派生视图。离线任务先写新版本，跑完整性检查与回归题，再切换下轮会话使用的版本。
+
+这样即便 dreaming 本身改错，也可以回到来源重建，而不是让新的摘要成为唯一事实来源。Managed Agents 文档也提供了把整理结果写到新 output store 的方式；有版本审计不代表可以省掉回归验证。
+
+### 7.2 把事实状态与适用范围写清楚
+
+一条记忆最好能回答：它是观察还是推断、谁验证过、来自哪次工具结果、适用于哪个项目或环境、最后什么时候确认。
+
+纠正错误也要区分：
+
+- 原来就是错的：例如读错地标。
+- 当时正确但后来过期：例如配置或合同发生变化。
+- 证据不足：只是 agent 的猜测。
+- 作用域不同：测试环境的事实不能覆盖生产环境。
+
+本实验只覆盖第一类及无证据隔离，不覆盖其他冲突。
+
+### 7.3 写入协议要防止覆盖，摘要协议要保护精确信息
+
+Harvey 的失败不是仅仅「摘要写得不够认真」，还涉及并发修改共享页。可以按实体划分单一写入者，用独立主题页承接细节，再由单独阶段汇总索引。
+
+若允许并发编辑，存储接口需要版本或内容哈希前置条件；冲突时重新读取并合并，不能盲目重试覆盖。对于合同条款等高保真资料，优先保存可定位的原文，并把解释和引文分开。
+
+### 7.4 注入预算应有自动检查，不依赖写作者记性
+
+检查索引的字节、行数和链接可达性；关键导航放前面；超预算时重新组织，而不是继续追加。回归题应同时测 raw baseline、索引与检索组合，以及不允许下钻的对照。
+
+至少要能发现两种不同的倒退：答案错了，以及答案还对但启动或检索成本失控了。本文没有测真实 tokenizer、时延和成本，所以不能据此估算生产收益。
+
+### 7.5 记忆不是权限提升通道
+
+[Managed Agents 文档](https://platform.claude.com/docs/en/managed-agents/memory)明确警告：处理不可信输入的 agent 若有写权限，成功的 prompt injection 可能把恶意内容写入 store，后续 session 再把它作为可信记忆读取。共享参考资料可用只读存储，写权限应按需要授予。
+
+[Memory tool 文档](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool)则要求应用验证操作路径、确保它们仍在允许的记忆根目录内，并对敏感数据、文件大小和过期信息做管理。
+
+同理，dreaming 应保留来源的信任等级，不要把网页里的命令通过「总结」洗成全局规则；用户数据与项目数据要隔离。**一条内容被记住，不意味着它变成了授权。**
+
+### 7.6 先按风险决定整理对象，再决定运行频率
+
+原文承认持续检查全部记忆可能不现实，提出优先关注容易变化的信息，或按访问频率调整 dreaming 节奏。我的建议是额外关注：刚被否定的笔记、高频注入的规则、写入冲突、失效链接，以及经常导致答案回查原文的主题。
+
+这比「定时把所有文件重写一遍」更容易建立成本边界；但具体调度策略仍需要用自己的访问日志验证，本文没有做周期或规模实验。
+
+---
+
+## 8. 我的看法
+
+1. **最值得借鉴的是分工，而不是 dreaming 这个比喻。** 在线记下当时重要的事，离线用更完整的视角复核，发布时只把必要入口送进上下文。三个阶段的目标不同，不该用一份越来越长的 `MEMORY.md` 同时承担。
+
+2. **记忆质量不是写入量，而是可验证的未来效用。** CL-Bench 里从猜测走向经过验证的规则，Pokémon 里从状态流水走向策略导航，都是在减少下一次决策所需的重复工作。删掉噪声很重要，保住精确信息同样重要；Harvey 的合同事实正好提醒我们，抽象不是越短越好。
+
+3. **把 wiki 和 search 对立起来，是误读 Stainless。** 原文最好的组合是 wiki 加搜索，而非只靠 wiki。知识地图负责告诉 agent 去哪儿找，搜索负责回到地图还没覆盖的证据。能回查、能修正，比「一切都在记忆里」更可靠。
+
+4. **我的实验验证的是管线，不是智能。** 它确实跑出了 4/4 纠错、0/5 正确笔记事实损失，以及 269 字节启动索引；也确实表明，只注入索引而不读取内容答不了题。它没有证明规则系统能够替代 LLM dreaming，更没有复现官方评测。
+
+5. **下一步该补的是脏证据与时间，而不是更漂亮的目录。** 加入互相矛盾的工具结果、配置真实变更、相近但不同的实体、来源缺失与恶意文本，再看纠错是否会反过来破坏好记忆。只有这些回归也能守住，才值得讨论把闭环搬到真实 agent。
+
+---
+
+## 参考
+
+- [Anthropic：The components of agent memory（2026-11-06）](https://www.anthropic.com/research/components-of-agent-memory)——本文所有官方案例、模型观察与评测数字的来源，已读全文。
+- [Claude Code：How Claude remembers your project](https://code.claude.com/docs/en/memory)——已核对 auto memory 的头部注入限制、主题页按需加载及指令遵循提醒；产品文档后续可能变化。
+- [Claude API：Memory tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool)——客户端持久化、路径验证和安全注意事项。
+- [Claude Managed Agents：Memory stores](https://platform.claude.com/docs/en/managed-agents/memory)——目录挂载、版本审计、并发更新前置条件、读写隔离与记忆污染警告。
+- [CL-Bench 1.0 发布页](https://continual-learning-bench.com/news/cl-bench-1-0/)——已打开发布页；本文任务细节与模型结果来自 Anthropic 原文，不声称独立复现 benchmark。
+- [Harvey LAB 仓库](https://github.com/harveyai/harvey-labs)——已打开项目页；本文没有运行任务或读取其全部数据，结果仍以 Anthropic 原文为准。
+- [Google Research：The sleep framework](https://research.google/blog/the-sleep-framework-a-new-way-for-llms-to-retain-knowledge-in-continual-learning/)——原文相关链接，已阅读；它涉及参数记忆更新，与本文整理外部文本记忆的 dreaming 不应混为一谈，本文未引用其评测数字。
