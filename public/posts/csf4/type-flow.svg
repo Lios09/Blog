@@ -3,16 +3,16 @@
   <title id="title">CSF 4 类型流：从 definePreview 经 preview.meta 到 meta.story</title>
   <desc id="desc">Addon 在 definePreview 注入 parameters 与 globals 类型；preview.meta 从 component 推断 props；meta.story 检查 args 与 addon 参数。preview.type 与 meta.type 只追加自定义 args。</desc>
   <rect width="920" height="640" fill="#f7f4ee"/>
-  <text x="460" y="36" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700" fill="#1f2933">CSF 4 的类型流：preview → meta → story</text>
-  <text x="460" y="60" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#5b6770">官方链是 definePreview → preview.meta → meta.story；addon 通过 preview 的 addons 字段扩展类型</text>
+  <text x="460" y="36" text-anchor="middle" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="20" font-weight="700" fill="#1f2933">CSF 4 的类型流：preview → meta → story</text>
+  <text x="460" y="60" text-anchor="middle" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#5b6770">官方链是 definePreview → preview.meta → meta.story；addon 通过 preview 的 addons 字段扩展类型</text>
 
   <!-- preview -->
   <rect x="70" y="88" width="780" height="118" rx="10" fill="#ffffff" stroke="#1f6feb" stroke-width="2"/>
   <rect x="70" y="88" width="12" height="118" rx="0" fill="#1f6feb"/>
-  <text x="98" y="116" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#1f6feb">1. definePreview（.storybook/preview.ts）</text>
-  <text x="98" y="140" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#334155">definePreview({ addons: [addonA11y()], parameters: { a11y: { options: { xpath: true } } } })</text>
-  <text x="98" y="164" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#334155">返回 Preview 对象。写进 addons 的项如果提供 ./preview 导出，就会把 parameters / globals 等注解类型</text>
-  <text x="98" y="184" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#334155">注入整个项目。官方文档写明：并非所有 addon 都已支持这种类型扩展。</text>
+  <text x="98" y="116" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1f6feb">1. definePreview（.storybook/preview.ts）</text>
+  <text x="98" y="140" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">definePreview({ addons: [addonA11y()], parameters: { a11y: { options: { xpath: true } } } })</text>
+  <text x="98" y="164" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">返回 Preview 对象。写进 addons 的项如果提供 ./preview 导出，就会把 parameters / globals 等注解类型</text>
+  <text x="98" y="184" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">注入整个项目。官方文档写明：并非所有 addon 都已支持这种类型扩展。</text>
 
   <path d="M460 206 v22" stroke="#1f2933" stroke-width="2" fill="none"/>
   <polygon points="454,228 466,228 460,238" fill="#1f2933"/>
@@ -20,11 +20,11 @@
   <!-- meta -->
   <rect x="70" y="246" width="780" height="132" rx="10" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
   <rect x="70" y="246" width="12" height="132" fill="#0f766e"/>
-  <text x="98" y="274" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#0f766e">2. preview.meta（Button.stories.ts）</text>
-  <text x="98" y="298" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#334155">import preview from '../.storybook/preview'</text>
-  <text x="98" y="322" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#334155">const meta = preview.meta({ component: Button, parameters: { layout: 'centered' } })</text>
-  <text x="98" y="346" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#334155">component 的 props 被自动推断，不必再写 Meta&lt;typeof Button&gt;。parameters 此时已带上 preview 里 addon 的类型。</text>
-  <text x="98" y="366" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#334155">若要追加组件 props 之外的 args，用 preview.type&lt;{ args: CustomArgs }&gt;().meta({...})，只需声明多出来的字段。</text>
+  <text x="98" y="274" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#0f766e">2. preview.meta（Button.stories.ts）</text>
+  <text x="98" y="298" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">import preview from '../.storybook/preview'</text>
+  <text x="98" y="322" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">const meta = preview.meta({ component: Button, parameters: { layout: 'centered' } })</text>
+  <text x="98" y="346" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">component 的 props 被自动推断，不必再写 Meta&lt;typeof Button&gt;。parameters 此时已带上 preview 里 addon 的类型。</text>
+  <text x="98" y="366" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">若要追加组件 props 之外的 args，用 preview.type&lt;{ args: CustomArgs }&gt;().meta({...})，只需声明多出来的字段。</text>
 
   <path d="M460 378 v22" stroke="#1f2933" stroke-width="2" fill="none"/>
   <polygon points="454,400 466,400 460,410" fill="#1f2933"/>
@@ -32,12 +32,12 @@
   <!-- story -->
   <rect x="70" y="418" width="780" height="132" rx="10" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
   <rect x="70" y="418" width="12" height="132" fill="#b45309"/>
-  <text x="98" y="446" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#b45309">3. meta.story / meta.type.story / .extend</text>
-  <text x="98" y="470" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#334155">export const Primary = meta.story({ args: { primary: true }, parameters: { a11y: { ... } } })</text>
-  <text x="98" y="494" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#334155">args 的每个 key 必须来自：组件 props、带类型的 render / decorator，或 preview.type / meta.type 声明的字段。</text>
-  <text x="98" y="518" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#334155">meta 已提供的 args 在 story 里变为可选；meta.type 新声明的必填 arg 必须在该 story 再写一次。</text>
-  <text x="98" y="538" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#334155">漏填必填项、写错字面量类型、或给 addon parameter 一个不存在的取值，都会在这里被 TypeScript 拒绝。</text>
+  <text x="98" y="446" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#b45309">3. meta.story / meta.type.story / .extend</text>
+  <text x="98" y="470" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">export const Primary = meta.story({ args: { primary: true }, parameters: { a11y: { ... } } })</text>
+  <text x="98" y="494" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">args 的每个 key 必须来自：组件 props、带类型的 render / decorator，或 preview.type / meta.type 声明的字段。</text>
+  <text x="98" y="518" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">meta 已提供的 args 在 story 里变为可选；meta.type 新声明的必填 arg 必须在该 story 再写一次。</text>
+  <text x="98" y="538" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">漏填必填项、写错字面量类型、或给 addon parameter 一个不存在的取值，都会在这里被 TypeScript 拒绝。</text>
 
-  <text x="460" y="590" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#64748b">运行时的注解合并规则：args 浅合并；parameters 深合并（数组替换）；decorators 与 tags 拼接。</text>
-  <text x="460" y="612" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#64748b">类型流和这条合并链对齐，这是工厂 API 相对 CSF 3 里手动串联 Meta / StoryObj / satisfies 的关键差别。</text>
+  <text x="460" y="590" text-anchor="middle" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="12" fill="#64748b">运行时的注解合并规则：args 浅合并；parameters 深合并（数组替换）；decorators 与 tags 拼接。</text>
+  <text x="460" y="612" text-anchor="middle" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="12" fill="#64748b">类型流和这条合并链对齐，这是工厂 API 相对 CSF 3 里手动串联 Meta / StoryObj / satisfies 的关键差别。</text>
 </svg>
