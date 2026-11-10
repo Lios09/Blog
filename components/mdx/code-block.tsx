@@ -17,8 +17,6 @@ interface Props {
 }
 
 export async function CodeBlock({ code, meta }: Props) {
-  "use cache";
-
   const { language, title } = parseCodeMeta(meta);
   const usesTwoslash = isTwoslashCode(language, meta);
   const highlightedHtml = usesTwoslash
