@@ -1,3 +1,4 @@
+import { cacheLife } from "next/cache";
 import { parseCodeMeta } from "@/lib/mdx/code";
 import { highlight, highlightCode, Themes } from "@/utils/shiki/highlight";
 import { highlightTwoslash, isTwoslashCode } from "@/utils/shiki/twoslash";
@@ -17,6 +18,11 @@ interface Props {
 }
 
 export async function CodeBlock({ code, meta }: Props) {
+  // Shiki's tokenizer calls Date.now() for its match timeout. With
+  // cacheComponents, that has to run inside "use cache" or prerender fails.
+  "use cache";
+  cacheLife("max");
+
   const { language, title } = parseCodeMeta(meta);
   const usesTwoslash = isTwoslashCode(language, meta);
   const highlightedHtml = usesTwoslash
