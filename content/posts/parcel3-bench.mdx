@@ -1,0 +1,273 @@
+---
+title: "Parcel 3 alpha 实测：同应用对比 Parcel 2 / Rspack"
+description: "同一份 390 模块 React SPA 上对比 Parcel 2.16.4、Parcel 3 alpha.2 与 Rspack 2.3.1：冷构建约 14.2×，不是官方 100×。"
+date: "2026-11-09"
+author: "Lios09"
+tags:
+  - parcel
+  - rspack
+  - bundler
+  - react
+  - rust
+  - benchmark
+category: "Development"
+published: true
+featured: false
+---
+
+## 1. 官方数字是「最多快 100 倍」，先看它在测什么
+
+[Parcel 3 alpha 公告](https://v3.parceljs.org/blog/v3-alpha/)写于 2026-11-04，第一段就把范围划清楚了：
+
+> Today we're releasing the first alpha of Parcel 3, a ground up rewrite of Parcel in Rust. It is up to 100x faster than v2, and supports native plugins written in Rust, Go, Swift, or C, as well as a custom runtime for JavaScript and TypeScript plugins.
+
+同一篇稍后又补了一句更具体的口径：「up to 100x faster builds using the same underlying compilers as v2, only changing the core。」也就是说，他们没有换掉 v2 里已经用 Rust 重写过的那些编译器（SWC、Lightning CSS，以及后来的 HTML/SVG transformer），只换了核心。公告里的对比图测的是 React Spectrum 这个大型 TypeScript monorepo 的**冷开发构建**，并给出了三个入口的规模：
+
+| 入口          | 公告对规模的描述                                                         |
+| ------------- | ------------------------------------------------------------------------ |
+| Storybook     | 约 100 个入口，JS macros，自定义插件为 Parcel 3 移植到了 Rust            |
+| Docs website  | 约 340 页，React Server Components、MDX、Tailwind、自定义插件            |
+| Library build | 约 160 个包，TSX、macros、CSS modules、SVG icons，输出超过 14,000 个文件 |
+
+图里的柱状数值只出现在图片里，本文没有从截图里估读毫秒数。能引用的只有上面这些文字，以及「up to 100x」本身——这是上限描述，不是对任意项目、任意构建模式的承诺。
+
+安装方式公告和[迁移指南](https://v3.parceljs.org/migration/parcel-2/)说的是同一套：日常可以把依赖换成 `parcel@next`（本文写作时 `parcel@next` 指向 `3.0.0-alpha.2`）；如果想和 Parcel 2 并排，就装 `@parcel/parcel3`，用 `parcel3` 命令，并给一个不同的 `--dist-dir`。`@parcel/parcel3` 的 `package.json` 里没有普通 `dependencies`，平台二进制走 `optionalDependencies`（例如 Linux x64 是 `@parcel/parcel3-linux-x64`）。启动脚本 `bin/parcel3` 是一层很薄的 Node shim：它 `require.resolve` 出对应平台的 `parcel` 可执行文件，然后 `process.execve` 把自己替换成这个本地二进制。注释里写，启动 Node 本身大约要 30 ms，而「a tool whose whole point is being fast」承担不起每次调用都交这笔税，所以第一次运行还会改写 `node_modules/.bin/parcel3`，让之后的调用不再经过 Node。
+
+测机上解出的 `@parcel/parcel3-linux-x64/parcel` 是 37,961,112 字节（约 36.2 MiB）的 ELF；用 gzip -6 压完是 15,249,068 字节。公告写「the Parcel 3 binary is less than 30 MB with zero npm dependencies」，并说这比 Parcel 2「total install size (including dependencies) was ~120 MB」小 4 倍。我测到的未压缩文件比「不到 30 MB」略大，公告可能指发布体积或另一套压缩口径，没有拆他们的 npm tarball 核对。
+
+---
+
+## 2. 重写核心的理由：共享内存、GC、跨线程序列化
+
+公告把 v2 的瓶颈写得很具体。v2 已经把 JavaScript 编译器（基于 SWC）、Lightning CSS、HTML/SVG transformer 和 optimizer 陆续改成了 Rust，但**核心仍是 JavaScript**：
+
+> This limited our maximum possible performance due to lack of shared memory between threads, high memory usage, garbage collection, and the cost of serializing values between workers and languages.
+
+这四件事——线程之间不能共享内存、内存占用高、垃圾回收、worker 与跨语言边界上的序列化——是官方对自己为什么要重写核心的解释，不是我事后推测。v3 的对策也写在同一段：
+
+> Parcel v3 is an entirely self-contained Rust binary, with no dependency on Node at all. Everything from the CLI and dev server, to the transformers, bundler, optimizers, and everything in between is now fully native. This enables us to efficiently take full advantage of modern multi-core hardware.
+
+缓存策略跟着变了。公告回顾 v2「heavily invested in disk caching and incremental builds」，并说缓存在「底层代码很慢」（比如基于 JavaScript 的打包器）时很有效；一旦冷构建本身已经很快，记账、失效追踪反而可能变成瓶颈，还会引入一批过期缓存的 bug。结论是：
+
+> Parcel 3 uses a significantly simpler architecture, optimizing for the fastest possible cold builds rather than paying for the overhead of caching. We still support incremental in-memory rebuilds, but don't need to write each transformation result to disk, or perfectly track all possible invalidations.
+
+[迁移指南](https://v3.parceljs.org/migration/parcel-2/)把这落实成一句操作说明：「Parcel 3 is fast enough that it no longer writes a cache to disk. You can delete the `.parcel-cache` directory」。CLI 上也删掉了 `--no-cache` 和 `--cache-dir`。
+
+本文后面的「热构建」对 Parcel 3 因此有一层特殊含义：新进程里的第二次 `parcel3 build` **没有磁盘缓存可复用**，它测的是另一次冷构建，外加文件系统里可能已经热了的源文件页缓存。真正的增量发生在 `parcel3 serve` 的进程内重建。
+
+内置能力方面，公告说常见 Web 语言都打进同一个二进制（HTML、CSS、JavaScript、TypeScript、SVG、图片转换与优化、RSS/Atom、web manifest 等），并且「Newly added is native support for Tailwind (without PostCSS), React Compiler, MDX, SVG → JSX, and glob imports。」这些是能力清单，不是「默认全开」：[React 文档](https://v3.parceljs.org/recipes/react/)里 React Compiler 要在 `.parcelrc` 里给 `@parcel/transformer-js` 设 `reactCompiler: true` 才会启用；Tailwind 也要显式加上 `@parcel/transformer-tailwind`。MDX 则是[开箱即用](https://v3.parceljs.org/languages/mdx/)。为了让三份构建编译同一份源码，本文没有打开 React Compiler，也没有用 Tailwind 或 MDX。
+
+JS 插件方面，因为二进制本身不依赖 Node，v3 用嵌入的 QuickJS 跑 JavaScript/TypeScript 插件和 macros，「intentionally lacks things like network access」；需要极限性能时官方建议写原生插件。这与本次基准无关，但能解释「standalone binary without Node」并不是「再也不能写 JS 插件」。
+
+---
+
+## 3. 实验设定：同一份源码、三种等价的生产配置
+
+应用由 `labs/parcel3-bench/generate.mjs` 生成，三次运行写出相同内容。它是一个 React 19 + TypeScript 的单页应用，用 `react-router-dom` 的 `createBrowserRouter`，每个页面 `React.lazy`：
+
+| 项目       | 数量                                                          |
+| ---------- | ------------------------------------------------------------- |
+| 路由页面   | 24（另加一个非懒加载的 Home）                                 |
+| 页面内组件 | 12 × 24 = 288                                                 |
+| 共享 UI    | 8（Layout、Nav、Button、Card 等）                             |
+| hooks      | 8                                                             |
+| utils      | 32                                                            |
+| CSS        | 24 个 CSS Modules + 1 份全局样式                              |
+| 源文件     | 390（324 个 `.tsx`、40 个 `.ts`、25 个 `.css`、1 个类型声明） |
+| 行数       | 6,426                                                         |
+
+叶子组件是 `src/pages/page-01/Widget01.tsx`，里面有一个 `LEAF_MARKER_0` 字符串，HMR 测试只改这一个标记。
+
+版本（`npm ls` 与 CLI `--version` 一致）：
+
+| 工具       | 版本                                                                     |
+| ---------- | ------------------------------------------------------------------------ |
+| Parcel 2   | `parcel@2.16.4`                                                          |
+| Parcel 3   | `@parcel/parcel3@3.0.0-alpha.2`（`parcel3 --version` → `3.0.0-alpha.2`） |
+| Rspack     | `@rspack/core@2.3.1`、`@rspack/cli@2.3.1`、`@rspack/dev-server@2.2.2`    |
+| React      | `react@19.2.0`、`react-dom@19.2.0`、`react-router-dom@7.9.4`             |
+| Node / npm | v24.22.1 / 11.21.1                                                       |
+
+机器：8 核 `Intel(R) Xeon(R) Processor`，`MemTotal` 16,386,368 kB（约 16 GiB），Linux 6.12.94+。没有把这份数字和官方 React Spectrum 或 Rspack 自己那套「真实项目、数十 GiB RSS」的基准比绝对值。
+
+三套生产命令里，压缩和 source map 对齐如下：
+
+```bash
+parcel  build index.html --dist-dir dist-parcel2 --no-source-maps --cache-dir .parcel-cache
+parcel3 build index.html --dist-dir dist-parcel3 --no-source-maps
+rspack  build --config rspack.config.mjs
+```
+
+- 三者都关 source map：Parcel 用[文档里的](https://v3.parceljs.org/features/cli/) `--no-source-maps`；Rspack 用 `devtool: false`。产物目录里没有 `.map` 文件。
+- 三者都开 minify：`parcel build` / `parcel3 build` 默认启用（可用 `--no-optimize` 关掉，本文没关）；Rspack 在 `mode: "production"` 下 `optimization.minimize: true`。
+- `browserslist` 统一为 `> 0.5%, last 2 versions, not dead`。
+- gzip 体积用 Python `gzip.compress(data, compresslevel=6, mtime=0)`，与 `gzip` 默认压缩级别一致；只统计 JS、CSS、HTML，不把 source map 算进去（本来也没有）。
+- 冷构建每次先删掉该工具的缓存目录再开跑：Parcel 2 删 `.parcel-cache`；Parcel 3 按文档不写磁盘缓存，仍然会清一下 `.parcel-cache`，以免和 v2 残留搅在一起；Rspack 删 `.rspack-cache`。
+- 每组 5 次，下文表格里的时间、RSS 是中位数，括号里是 min–max。墙钟时间取自 `time.perf_counter()` 包住的整次进程；峰值 RSS 取 GNU time 1.9 的 `-v` 输出里 `Maximum resident set size (kbytes)`。测机没有预装 `/usr/bin/time`，用的是同一套 GNU time 1.9。另外用 `/proc` 对进程树采样了第二列 RSS，因为 Parcel 2 会拉起 Node worker：两组中位数非常接近（相差不到 1%），没有出现「父进程 rusage 漏掉子进程」的明显偏差。
+- Rspack 的[缓存文档](https://rspack.rs/config/cache)写明：默认在 development 是 `{ type: "memory" }`，在 production 是 `false`。为了让「热构建」对 Rspack 有意义，生产配置显式打开了 `cache: { type: "persistent", storage: { type: "filesystem", directory: ".rspack-cache" } }`。**没有**打开仍是实验性的 `experiments.newCache`（Rspack 2.3 公告写它默认关闭）。
+
+还有三处为了「同一份源码能编过」而做的、必须写明的配置差异：
+
+1. Parcel 2 默认没有完整跟随 package `exports`。直接构建会在 `react-router-dom` 里报 `Failed to resolve 'react-router/dom'`。给 Parcel 2 加上 `"@parcel/resolver-default": { "packageExports": true }` 之后才能继续。迁移指南写 Parcel 3「Package `exports` are always enabled」，所以这是在补齐 v2 侧缺失的默认行为，不是给 v2 开外挂。
+2. Rspack 内置 CSS Modules 默认导出的是具名绑定（`page` / `title` / `grid`），`import styles from "./Page.module.css"` 会报 `export 'default' was not found`。设置 `module.parser["css/auto"].namedExports = false` 之后，和 Parcel 的默认对象导出对齐。
+3. `@rspack/cli` 的 `serve` 在「只针对 web」的编译器上，若用户没写 `lazyCompilation`，会默认加上 `{ imports: true, entries: false }`。结果是 `React.lazy()` 路由里的模块要等浏览器打到 lazy-compile 中间件才会被编译和监视——改叶子组件不会出现第二条 `compiled successfully`。本文在配置里写了 `lazyCompilation: false`，这样 HMR 的测法才能和 Parcel 一样：改文件，读下一次编译日志。另外，`rspack serve` 需要单独安装 `@rspack/dev-server`（2.2.2），否则 CLI 会直接退出。
+
+React Compiler 在 Parcel 3 和 Rspack 2.1+ 都是可选项，两边都没开。Parcel 自带 Fast Refresh；Rspack 要额外的 `@rspack/plugin-react-refresh` 才能做组件态保留。本次 HMR 只测打包器日志里的重建时间，没有在浏览器里测状态是否保留，所以没装这个插件。
+
+{/* 完整脚本、配置和 CSV 在 [`labs/parcel3-bench/`](https://github.com/Lios09/Blog/tree/main/labs/parcel3-bench)。复现： */}
+
+```bash
+cd labs/parcel3-bench
+npm install
+npm run generate
+python3 bench.py          # 每组 5 次冷/热/dev+HMR，全量约数分钟到十几分钟
+python3 summarize.py
+```
+
+`python3 bench.py --smoke --only parcel3` 可做单次冒烟。
+
+---
+
+## 4. 冷构建：14 倍，不是 100 倍
+
+生产冷构建（每次清空该工具的缓存和输出目录）：
+
+| 打包器               | 中位墙钟时间 | 区间          | 相对 Parcel 2 |
+| -------------------- | -----------: | ------------- | ------------: |
+| Parcel 2.16.4        |      1.595 s | 1.401 – 1.905 |          1.0× |
+| Rspack 2.3.1         |      0.325 s | 0.321 – 0.354 |          4.9× |
+| Parcel 3.0.0-alpha.2 |      0.112 s | 0.110 – 0.150 |         14.2× |
+
+Parcel 3 相对 Parcel 2 的中位比值是 1.595 / 0.112 ≈ 14.2，不是 100。Rspack 相对 Parcel 2 约 4.9 倍，Parcel 3 相对 Rspack 约 2.9 倍。第一次冷构建（Parcel 3 的 0.150 s、Parcel 2 的 1.905 s）略慢于后面几次，符合「二进制和源文件页还没进 OS 缓存」的常识；中位数已经把这次算进去了。
+
+为什么远不到 100 倍，我认为有三件可以核对、不必发明的原因：
+
+1. **官方测的不是这种项目。** 他们写的是 React Spectrum 的冷*开发*构建：上百个 Storybook 入口、340 页带 RSC/MDX/Tailwind 的文档站、160 个包输出一万四千个文件，而且还带「移植到 Rust 的自定义插件」。本文是 390 个模块的单一 SPA、生产模式、没有自定义插件、没有 MDX/Tailwind/macros。规模差一个数量级以上，100× 这种上限出现在更大、插件更重的图上并不奇怪。
+2. **官方比的是「只换核心、编译器相同」。** 这句话 equally 适用于我们：三边的 JS 压缩/转译底子都是 SWC 家族（Parcel 2/3 用 SWC 压缩 JS，Rspack 2.3 还换成了 [SWC Next 解析器](https://rspack.rs/blog/announcing-2-3)）。核心换成 Rust 之后，剩下的时间会越来越接近「读盘 + 跑 SWC + 写盘」的下限。这份应用上 Parcel 2 本身只要 1.6 秒，再快 100 倍意味着 16 毫秒——只够付进程启动和扫一遍 390 个文件。Parcel 3 落到 112 毫秒，已经开始撞上这类固定成本。
+3. **「up to」是上限。** 公告没有说中型 SPA 的生产构建也会看到 100 倍。把 14.2 写成「没达到承诺」并不准确；把它写成「在这份项目、这种模式下测到的倍数」才准确。
+
+GNU time 记录的冷构建 CPU 占用，Parcel 3 五次是 299%–318%，Parcel 2 是 282%–334%，Rspack 是 183%–194%。也就是说三家都在用多核，并不是「只有 Rust 核心才会并行」；这份 390 个模块的应用也远没有把 8 核吃满。墙钟上的 14 倍，更多来自单次工作更便宜（没有 JS 核心、没有跨 worker 序列化、也没有磁盘缓存记账），而不是并行度突然高了一个数量级。
+
+---
+
+## 5. 热构建：谁还需要磁盘缓存
+
+紧挨着每次冷构建、不删缓存、只清输出目录再跑一次：
+
+| 打包器                                | 中位墙钟时间 | 区间          |      相对自己的冷构建 |
+| ------------------------------------- | -----------: | ------------- | --------------------: |
+| Parcel 2.16.4                         |      0.568 s | 0.497 – 0.607 |                  2.8× |
+| Rspack 2.3.1（显式 persistent cache） |      0.137 s | 0.132 – 0.169 |                  2.4× |
+| Parcel 3.0.0-alpha.2                  |      0.124 s | 0.111 – 0.132 | 0.90×（没有磁盘缓存） |
+
+Parcel 2 的磁盘缓存把第二次生产构建从 1.595 s 收到 0.568 s，仍然比 Parcel 3 的「再跑一次冷构建」（0.124 s）慢大约 4.6 倍。Rspack 打开 persistent cache 之后，热构建（0.137 s）已经和 Parcel 3 的另一次冷构建同一量级。
+
+Parcel 3 的「热」中位数（0.124 s）甚至略慢于「冷」（0.112 s）。这不是测量错误：按文档它根本不写 `.parcel-cache`，两次都是完整构建，0.01 s 的差别落在本次 5 次样本的噪声里（冷的区间是 0.110–0.150 s）。公告说的「incremental in-memory rebuilds」要看下一节的 `serve`，不能从第二次 `parcel3 build` 里读出来。
+
+如果生产流水线每次都是干净的 CI runner，Parcel 3 这种「针对冷构建优化、不再维护磁盘缓存」的设计直接对上使用方式。如果是本机反复跑 `build`，Rspack 的 persistent cache 和 Parcel 2 的 `.parcel-cache` 仍然有用，只是在这份中型应用上，它们追不上 Parcel 3 重跑一次冷构建的速度。
+
+---
+
+## 6. 产物体积：更快不等于更小
+
+三个工具都产出 51 个文件（1 个 HTML + 切出来的 JS/CSS，没有 source map）。体积在 5 次之间完全相同：
+
+|            |  JS raw | JS gzip | CSS raw | CSS gzip | HTML raw | HTML gzip | JS+CSS+HTML gzip |
+| ---------- | ------: | ------: | ------: | -------: | -------: | --------: | ---------------: |
+| Parcel 2   | 514,447 | 136,665 |   4,649 |    3,898 |      308 |       236 |          140,799 |
+| Parcel 3   | 664,885 | 185,427 |   4,664 |    3,893 |    2,488 |     1,299 |          190,619 |
+| Rspack 2.3 | 423,299 | 122,876 |   4,231 |    3,880 |      315 |       240 |          126,996 |
+
+CSS 几乎一样（gzip 都在 3.9 KB 附近）。差在 JS 和 HTML。
+
+Parcel 3 的 JS raw 比 Parcel 2 大约重 29%（514,447 → 664,885）；gzip 则重约 36%（136,665 → 185,427）。迁移指南写明：「Parcel 3 no longer concatenates modules into a single scope ("scope hoisting"). Tree shaking is still supported, and unused exports are removed from your production builds.」公告也说 scope hoisting 被去掉是为了「reduces bug surface area while retaining most of the benefit of tree shaking, and enabling features like top-level await」。本次没有做逐模块的对比来证明体积差全部来自这件事，但它是官方文档里与「同样做 tree-shaking，却不再做作用域提升」直接对应的行为变化。Rspack 仍走 webpack 那一套 module concatenation / splitChunks（2.3 还默认给 production 开了 `splitChunks.dedupDepth: 1`），JS gzip 是三家里最小的（122,876 字节）。
+
+Parcel 3 的 HTML 明显更大，是因为它往入口 HTML 里内联了一份 `data-parcel-manifest` JSON：稳定的 bundle id 映射到带内容哈希的文件名。这和[生产文档](https://v3.parceljs.org/features/production/)里写的「manifest in each HTML page or entry bundle to avoid the cascading invalidation problem」对得上——更新一个异步页面时，不必让中间 bundle 的文件名跟着 cascade。这是用入口 HTML 的体积换缓存命中率，不是漏压缩。Parcel 2 和 Rspack 的 HTML 只是普通的 `<script>` / `<link>` 标签（308 / 315 字节）。
+
+所以：如果只看「用户第一次下载的 gzip 字节」，Rspack 最小，Parcel 3 最大；如果把入口 HTML 里的 manifest 算成「为了级联失效而付的账」，Parcel 3 的体积故事和速度故事就不是同一根轴。公告里另一组数字——在一个 450 页的站点上相对 v2「64% fewer HTTP requests per page」「10% less transferred bytes per page」——来自改进后的分包合并，本文这个 24 路由的应用没有复现那种页面级 HTTP 请求对比。
+
+---
+
+## 7. 开发服务器启动与 HMR
+
+启动时间定义为：进程起来之后，日志里第一次出现编译完成（Parcel 的 `Built in …`，Rspack 的 `compiled successfully`）。HMR 是在这次编译完成后再等约 1.2 秒，把 `Widget01.tsx` 里的 `LEAF_MARKER_0` 改成 `LEAF_MARKER_1`，然后读下一条编译完成日志。`hmr_reported` 是打包器自己打印的重建时间；`hmr_wall` 是从 `write_text` 返回到读到该行的墙钟时间，里面还包括文件监视器的延迟，以及脚本大约 20 ms 一次的轮询粒度。
+
+| 打包器               | 启动中位 | 启动区间      | 日志中的 HMR 中位 | HMR 区间  | 墙钟 HMR 中位 |
+| -------------------- | -------: | ------------- | ----------------: | --------- | ------------: |
+| Parcel 2.16.4        |  1.218 s | 1.109 – 1.325 |             58 ms | 54 – 61   |         61 ms |
+| Rspack 2.3.1         |  0.242 s | 0.222 – 0.264 |             17 ms | 17 – 18   |         40 ms |
+| Parcel 3.0.0-alpha.2 |  0.102 s | 0.081 – 0.127 |            4.5 ms | 4.4 – 5.5 |         20 ms |
+
+Parcel 3 的开发启动（0.102 s）已经和它的生产冷构建同一量级，比 Parcel 2 快约 12 倍。HMR 日志时间 4.5 ms 对 58 ms，大约 13 倍；墙钟时间被监视/轮询垫到了约 20 ms，不能理解成「重建本身要 20 ms」。Rspack 在关掉 `lazyCompilation` 之后，日志里稳定在 17–18 ms。
+
+这里必须重复一次第 3 节的限制：这是「改一个已经被纳入当前编译图的叶子文件，打包器说重建花了多久」，不是「浏览器里 Fast Refresh 是否保住了组件 state」，也不是 Rspack 默认 lazy compilation 打开时的体验。默认的 `rspack serve` 对 `React.lazy` 路由会把编译推迟到浏览器真正访问那条路由；我是关掉它之后才测到上表里的 17 ms。
+
+---
+
+## 8. 内存：独立二进制对上 Node 进程
+
+GNU time 的峰值 RSS（KiB，中位数；括号内是 min–max）：
+
+|          |                   生产冷构建 |                   生产热构建 |     dev server（含一次 HMR） |
+| -------- | ---------------------------: | ---------------------------: | ---------------------------: |
+| Parcel 2 | 850,844（803,604 – 865,880） | 402,456（331,516 – 405,356） | 686,348（682,812 – 695,600） |
+| Parcel 3 | 128,896（124,688 – 145,400） | 126,628（122,568 – 132,388） | 189,096（180,680 – 191,376） |
+| Rspack   | 179,216（177,448 – 181,728） | 145,388（145,188 – 147,112） | 199,140（198,060 – 199,508） |
+
+换算成 MiB（÷ 1024）：Parcel 2 冷构建约 831 MiB，Parcel 3 约 126 MiB，Rspack 约 175 MiB。Parcel 2 大约是 Parcel 3 的 6.6 倍。这和公告把 v2 核心留在 JavaScript 时点名的「high memory usage, garbage collection」是同一方向，但数量级不能外推到他们在 React Spectrum 上画的那张内存图——那张图的数值同样只在图片里。
+
+Parcel 3 是单进程多线程的原生二进制，GNU time 看到的 RSS 就是这个进程（线程共享地址空间）。Parcel 2 是 Node 主进程加 worker：进程树采样的中位数（850,360 KiB）和 GNU time（850,844 KiB）几乎相同，说明在这份项目上，rusage 并没有明显少记。Rspack 的 CLI 仍通过 Node 启动，核心在 Rust，内存介于两者之间。
+
+Parcel 2 热构建的 RSS 降到约 393 MiB，和它用磁盘缓存、少做重复变换相符。Parcel 3 冷/热几乎一样（126–129 MiB），再次对应「没有磁盘缓存」。dev server 三家都比各自的生产冷构建更高一点，因为进程要一直活着做监视和 HMR。
+
+---
+
+## 9. 对接时碰到的真实差异
+
+这些不是基准数字，但是用「同一份 React 应用接三个打包器」时实际绊过的地方，值得写进正文以免别人重踩。
+
+```text
+src/*.tsx ──┬── parcel  (v2, Node 核心 + Rust 编译器)
+            ├── parcel3 (独立 Rust 二进制, QuickJS 跑 JS 插件)
+            └── rspack  (Node CLI + Rust 核心 + SWC Next)
+
+必须对齐才能编过同一份源码：
+  Parcel 2  + packageExports: true     （否则 react-router@7 解析失败）
+  Rspack    + namedExports: false      （否则 CSS Modules 没有 default）
+  Rspack    + lazyCompilation: false   （否则懒路由里的文件改了不重建）
+  Rspack    + @rspack/dev-server       （否则 `rspack serve` 直接退出）
+  全体      + 不开启 React Compiler
+```
+
+Parcel 3 的生产 HTML 会多一份 bundle manifest；比较「HTML 体积」时如果不知道这件事，会误以为 minify 坏了。Rspack 2.3 生产默认不写持久缓存，要测热构建必须自己打开——文档写得很清楚，只是和「webpack 用户对 cache 的直觉」不完全一样。
+
+官方还提到的一些 Parcel 3 能力，本次完全没有测：原生插件（Rust/Go/Swift/C）、`parcel run`、library mode 按 `exports` 并行出每个模块、改进后的分包成本模型、CSS 顺序的全应用分析、trusted HTTPS、内置 bundle analyzer。alpha 阶段公告自己列了还没做完的部分：compressor 插件、`.d.ts` 生成、自定义 bundler 插件、可编程的 JavaScript API，以及一些 known issues。
+
+---
+
+## 10. 我的看法
+
+1. **在这份中型 React 应用上，Parcel 3 alpha 的冷生产构建是三家里最快的，也明显更省内存，但那句「最多 100 倍」不能从这里读出来。** 14.2×、126 MiB 对 831 MiB、HMR 4.5 ms 对 58 ms，已经足够说明「把核心也改成 Rust、并且放弃磁盘缓存记账」不是营销空话。100× 写在 React Spectrum 那种规模的冷开发构建上，换到 390 个模块的生产构建，倍数自然会掉下来——这更像缩放规律，而不是实现没达标。
+
+2. **缓存哲学真的变了，测的时候不能假装没变。** Parcel 2 和（打开 persistent cache 的）Rspack 第二次 `build` 明显更快；Parcel 3 的第二次 `build` 只是又一次冷构建。谁对，取决于你的 `build` 是跑在干净的 CI 上，还是在同一台机器上反反复复跑。开发期的增量，要看 `serve` 进程内的 HMR，不能看第二次 CLI `build`。
+
+3. **体积是另一张成绩单。** 去掉 scope hoisting 之后，Parcel 3 的 JS gzip 比 Parcel 2 重了约 36%，比 Rspack 重了约 51%；入口 HTML 因为 manifest 从 300 字节量级变成了 2.5 KB。如果文章只报时间不报体积，会把「更快」写成「全面更好」。分包策略、级联失效、tree-shaking 深度，都没有被时间表吸收。
+
+4. **「同一份源码」本身就要付配置税。** package `exports`、CSS Modules 的 default / named、`rspack serve` 默认给动态 import 开 lazy compilation，每一项都让「公平对比」比命令行看起来更脏。我选择把这些差异写进配置并在正文里交代，而不是换一个更老的 `react-router` 或改写成不懒加载的路由来回避它们。读这些数字时，应当连同这些开关一起读。
+
+5. **如果继续往下做，我不会再追 100× 这个数字。** 更有价值的是：换一个真正的多入口或 monorepo 看倍数会不会靠近公告；打开 React Compiler 看它给构建时间和产物体积带来的成本；以及在浏览器里、而不是日志里，测 Fast Refresh 的可见延迟。那些都超出了这次 5 × 3 组 CLI 测量的范围。
+
+---
+
+## 参考
+
+- [Announcing Parcel 3 alpha（2026-11-04）](https://v3.parceljs.org/blog/v3-alpha/)——「up to 100x faster than v2」、独立 Rust 二进制、v2 核心仍为 JavaScript 的四条限制、冷构建优先的缓存哲学、React Spectrum 三个入口的规模描述、内置 Tailwind / React Compiler / MDX、「不到 30 MB / Parcel 2 安装约 120 MB」、`parcel@next` 与 `@parcel/parcel3` 并排安装。
+- [Migration from Parcel 2](https://v3.parceljs.org/migration/parcel-2/)——`parcel3` 命令与 `--dist-dir`、不再写磁盘缓存、package `exports` 默认开启、scope hoisting 已移除、CLI 删除 `--cache-dir`。
+- [Parcel 3 CLI](https://v3.parceljs.org/features/cli/)——`parcel serve` / `parcel build`、`--no-source-maps`、`--dist-dir`、`--no-optimize`。
+- [Parcel 3 Production](https://v3.parceljs.org/features/production/)——生产模式默认压缩、入口 HTML 里的 bundle manifest（避免级联失效）。
+- [Parcel 3 React](https://v3.parceljs.org/recipes/react/) 与 [JavaScript：React Compiler](https://v3.parceljs.org/languages/javascript/)——`reactCompiler` 需在 `.parcelrc` 里显式打开；Tailwind 需加入 `@parcel/transformer-tailwind`。
+- [Parcel 3 MDX](https://v3.parceljs.org/languages/mdx/)——MDX 开箱即用。
+- [Announcing Rspack 2.3（2026-10-29）](https://rspack.rs/blog/announcing-2-3)——SWC Next、相对 2.2 约 5%（部分大项目至 20%）的构建加速、某真实项目峰值 RSS 28.3 → 20.5 GiB、新缓存默认关闭、`splitChunks.dedupDepth: 1` 在 production 默认开启。
+- [Rspack Cache](https://rspack.rs/config/cache)——development 默认内存缓存，production 默认 `false`；persistent cache 的配置项。
+- [Rspack React](https://rspack.rs/guide/tech/react)——`builtin:swc-loader`、React Compiler 通过 `jsc.transform.reactCompiler` 开启（Rspack ≥ 2.1）。
+  {/* - 本文的复现实验：[`labs/parcel3-bench/`](https://github.com/Lios09/Blog/tree/main/labs/parcel3-bench) 下的 `generate.mjs`、`bench.py`、`summarize.py`、`rspack.config.mjs`、`package.json`、`results.csv`、`summary.md`、`raw/`。这些是作者自己的测量脚本，不是 Parcel 或 Rspack 的代码。 */}
