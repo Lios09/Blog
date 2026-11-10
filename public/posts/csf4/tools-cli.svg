@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 700" width="960" height="700" role="img" aria-labelledby="title desc">
+  <title id="title">storybook tools 与 dev server：组件元数据从哪里来</title>
+  <desc id="desc">组件源码和 CSF 经 react-component-meta 的 TypeScript LanguageService 抽出 props；MDX 生成 docs manifest。storybook tools 在独立进程里无头读取这些数据；需要浏览器的工具再挂到已运行的 dev server。</desc>
+  <rect width="960" height="700" fill="#f7f4ee"/>
+  <text x="480" y="36" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700" fill="#1f2933">无头 CLI 和 dev server：元数据走同一条抽取管线</text>
+  <text x="480" y="60" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#5b6770">React 默认用 react-component-meta（服务端 docgen）从 TypeScript 类型提取 props，而不是在浏览器里渲染组件</text>
+
+  <!-- sources -->
+  <rect x="40" y="88" width="200" height="70" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.5"/>
+  <text x="140" y="118" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700" fill="#1f2933">组件源码</text>
+  <text x="140" y="140" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#475569">TS 类型 / JSDoc</text>
+
+  <rect x="280" y="88" width="200" height="70" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.5"/>
+  <text x="380" y="118" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700" fill="#1f2933">CSF story 文件</text>
+  <text x="380" y="140" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#475569">静态分析 + JSX 用法</text>
+
+  <rect x="520" y="88" width="200" height="70" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.5"/>
+  <text x="620" y="118" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700" fill="#1f2933">MDX 文档</text>
+  <text x="620" y="140" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#475569">独立文档页</text>
+
+  <rect x="760" y="88" width="160" height="70" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.5"/>
+  <text x="840" y="118" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700" fill="#1f2933">.storybook</text>
+  <text x="840" y="140" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#475569">框架与 addon</text>
+
+  <!-- arrows down -->
+  <path d="M140 158 v28" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+  <polygon points="134,186 146,186 140,196" fill="#1f2933"/>
+  <path d="M380 158 v28" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+  <polygon points="374,186 386,186 380,196" fill="#1f2933"/>
+  <path d="M620 158 v88" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+  <polygon points="614,246 626,246 620,256" fill="#1f2933"/>
+  <path d="M840 158 v188" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+  <polygon points="834,346 846,346 840,356" fill="#1f2933"/>
+
+  <!-- extractor -->
+  <rect x="40" y="204" width="440" height="130" rx="10" fill="#ffffff" stroke="#1f6feb" stroke-width="2"/>
+  <text x="260" y="232" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#1f6feb">react-component-meta</text>
+  <text x="58" y="258" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">持久 LanguageService（按 tsconfig），增量更新，而不是</text>
+  <text x="58" y="276" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">每个文件新建一个抛弃式的 ts.Program。</text>
+  <text x="58" y="298" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">路径 1：从 story 里匹配组件的 JSX，调用 getResolvedSignature()</text>
+  <text x="58" y="316" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">路径 2：没有 JSX 时回退到组件函数的第一个参数类型</text>
+
+  <rect x="520" y="264" width="200" height="70" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="1.8"/>
+  <text x="620" y="294" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700" fill="#0f766e">docs manifest</text>
+  <text x="620" y="316" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#475569">MDX 静态生成</text>
+
+  <!-- manifests -->
+  <path d="M260 334 v28" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+  <polygon points="254,362 266,362 260,372" fill="#1f2933"/>
+
+  <rect x="40" y="380" width="440" height="64" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="1.8"/>
+  <text x="260" y="406" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700" fill="#0f766e">components manifest</text>
+  <text x="260" y="428" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#475569">CSF 静态分析 + 抽出的 props / 用法示例</text>
+
+  <!-- split -->
+  <path d="M260 444 v24" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+  <path d="M260 468 H 200" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+  <path d="M260 468 H 620" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+  <path d="M200 468 v16" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+  <polygon points="194,484 206,484 200,494" fill="#1f2933"/>
+  <path d="M620 334 v150" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+  <polygon points="614,484 626,484 620,494" fill="#1f2933"/>
+  <path d="M840 356 v128" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+  <path d="M840 484 H 760" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+  <path d="M760 484 v10" stroke="#1f2933" stroke-width="1.8" fill="none"/>
+
+  <!-- CLI box -->
+  <rect x="40" y="502" width="420" height="150" rx="10" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
+  <text x="250" y="530" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#b45309">storybook tools（无头，独立进程）</text>
+  <text x="58" y="556" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">不需要浏览器时绕过 dev server：docs list / docs show</text>
+  <text x="58" y="576" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">加载项目配置，按已注册 toolset 派生命令</text>
+  <text x="58" y="596" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">skills（ui-workflow、component-docs）走这条路径</text>
+  <text x="58" y="616" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">官方说法：Chromatic 规模项目上，冷启动 docgen</text>
+  <text x="58" y="636" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">交给 agent 的速度大约是 Storybook 10 的 10 倍</text>
+
+  <!-- dev server box -->
+  <rect x="500" y="502" width="420" height="150" rx="10" fill="#ffffff" stroke="#7c3aed" stroke-width="2"/>
+  <text x="710" y="530" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#7c3aed">storybook dev（浏览器 + MCP）</text>
+  <text x="518" y="556" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">需要浏览器时，CLI 挂到已运行的实例：</text>
+  <text x="518" y="576" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">例如 storybook tools review create</text>
+  <text x="518" y="596" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">MCP 在 /mcp，docs 工具集读取 components manifest</text>
+  <text x="518" y="616" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">HTTP 上的 manifest 路由由 componentsManifest 开关控制</text>
+  <text x="518" y="636" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#334155">官方更推荐本地用 skills，因为不必先起一个实例</text>
+</svg>

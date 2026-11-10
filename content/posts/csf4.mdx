@@ -1,0 +1,355 @@
+---
+title: "CSF 4：类型沿 preview → meta → story 流动，agent 不必先打开浏览器"
+description: "CSF 4 用工厂链把类型从 preview 传到 story，无头 CLI 让 agent 不必起 dev server 就能读到组件文档。"
+date: "2026-11-09"
+author: "Lios09"
+tags:
+  - storybook
+  - csf4
+  - typescript
+  - frontend
+  - docgen
+  - cli
+category: "Development"
+published: true
+featured: false
+---
+
+## 1. Storybook 11 想交给 agent 的，首先是一份可信的组件目录
+
+[Storybook 11 beta](https://storybook.js.org/blog/storybook-11-beta/)发布于 2026-11-09，作者是 Michael Shilman。文章把这次 beta 的主语写成「agent-ready design systems」，针对的是一个很具体的失败模式：coding agent 能很快写出界面，但缺少项目里真实组件的上下文时，就会复制已有组件、用错 API、漏掉该覆盖的状态。
+
+官方因此同时推出了几件配套的东西：给 coding agent 的官方 skills（`ui-workflow` 负责「用现有组件构建 → 写 story → 测试 → 交给人审」；`component-docs` 负责在动手前以节省 token 的格式查询组件 API、元数据、文档和示例），Claude / Codex 插件，以及一套无头 CLI。CSF 4 的工厂 API 和 React 上的 `react-component-meta`，是这条链能够成立的两个底座——前者让人（和 agent）写出的 story 在类型上站得住，后者让 agent 不必先把 Storybook 跑在浏览器里，也能读到组件到底接收哪些 props。
+
+博客里有两组需要单独标出出处的数字。其一是整包宣传语：这些能力「comes in a 25% smaller package with up to 10x faster context delivery than v10」。其二是针对 CLI 的补充：「On large projects like Chromatic, cold-start docgen results are delivered to agents ~10x faster than in Storybook 10. We anticipate another 2x improvement once TypeScript 7.1 stabilizes.」这两句都是官方自己的测量与预期，下文会再提到它们，但我没有复现 Chromatic 那次冷启动，也没有核对「小 25%」的统计口径。
+
+官方希望 12 月正式发布，升级命令是 `npx storybook@next upgrade`，新项目则是 `npm create storybook@next`。CSF 4 目前适用于 React、Vue、Angular、Web Components 和 Svelte；迁移指南把它写成 Storybook 11 推荐的 story 格式，同时明确 CSF 3 仍然可用，而且可以一次只改一个文件。
+
+## 2. CSF 3 缺的不是类型工具，而是一条自动接上的链
+
+CSF 3 的 TypeScript 写法，官方文档写得很清楚：
+
+```ts
+const meta = {
+  component: Button,
+} satisfies Meta<typeof Button>;
+export default meta;
+
+type Story = StoryObj<typeof meta>;
+
+export const Primary = {
+  args: {
+    primary: true,
+  },
+} satisfies Story;
+```
+
+`Meta` 和 `StoryObj` 都是泛型。把 `typeof Button` 传进去之后，TypeScript 会拒绝非法 arg，decorator、play、loader 的函数参数也能对上组件 props。这已经比「一个普通对象」好得多，但它依赖你自己把三段接对：
+
+1. `meta` 必须用 `satisfies Meta<typeof Button>`，而不是写成 `const meta: Meta<typeof Button> = { ... }`。后者会把对象拓宽成 `Meta` 本身，后面的 story 就看不见你在 meta 里具体写了哪些 args。
+2. `StoryObj` 必须吃 `typeof meta`，而不是再写一遍 `typeof Button`。官方 [TypeScript 指南](https://storybook.js.org/docs/11/writing-stories/typescript.md) 专门解释了这一步：把 `typeof meta` 传给 `StoryObj`，「informs TypeScript of the connection between the `meta` and `StoryObj` types」，TypeScript 才会明白 args 既可以写在 meta 上，也可以写在 story 上；一个必填 arg 如果已经在 meta 里给过，story 里不必再写一遍。
+3. 每个 story 再用 `satisfies Story`，才能继续报出漏写的必填项，以及在多个 story 之间复用 `play` 时避免「`play` 可能是 `undefined`」。
+
+少写其中任何一环，表面上代码还能跑，类型却会沉默地变宽。这就是我说 CSF 3 的推断「不完整」时具体在指的事情：**工具类型是有的，但类型图要靠作者每次手写对接；对接错了，TypeScript 不会自动从 `component` 和 preview 配置把约束推到每一个 story。**
+
+另外两处空白同样来自官方文档，而不是我的猜测：
+
+- 自定义 args 在 CSF 3 里必须手写交叉类型，例如 `React.ComponentProps<typeof Page> & { footer?: string }`，再把它传给 `Meta<...>`。组件本身的 props 和你多出来的字段被摊成同一个类型参数，文件一复杂就很容易写飘。
+- addon 的 `parameters` / `globals` 类型能够从 preview 注入到整个项目，是 CSF 4 才有的能力。API 文档原话说：「The ability for an addon to provide annotation types (`parameters`, `globals`, etc.) is new and not all addons support it yet。」换句话说，CSF 3 里你在 story 上写 `parameters: { a11y: { ... } }` 时，TypeScript 并没有一条从「项目安装了哪些 addon」出发的官方类型通道。CSF 4 的注解参考里，`parameters` 的底层类型仍然写成 `{ [name: string]: any }`；真正让 `layout: 'centered'` 变成「type-safe!」的，是工厂函数在每一步收窄之后的结果，而不是这个字段自己换了一种写法。
+
+所以 CSF 3 并不是「没有类型」。它缺的是：preview、组件 props、自定义 args、addon 注解这几份信息，怎样在不靠作者重复声明的前提下变成同一条链。
+
+## 3. 工厂 API：每一步的返回值，都是下一步的类型来源
+
+[CSF 4 API](https://storybook.js.org/docs/11/writing-stories/csf/api) 把这条链写得很直白：三个函数以工厂的方式工作，每一步的产出是下一步的函数（`definePreview` → `preview.meta` → `meta.story`），并在每一步提供完整的类型安全。
+
+项目级配置不再导出一个 `Preview` 类型注解过的普通对象，而是调用 `definePreview`：
+
+```ts
+import { definePreview } from "@storybook/your-framework";
+import addonA11y from "@storybook/addon-a11y";
+
+export default definePreview({
+  addons: [addonA11y()],
+  parameters: {
+    a11y: {
+      options: { xpath: true },
+    },
+  },
+});
+```
+
+`addons` 是这里最关键的注解，而且只在 CSF 4 的 preview 里有效。写进去的 addon 会把类型提供给整个项目，从而得到自动补全和类型检查。官方 addon 用默认导出：`import addonName from '@storybook/addon-name'`；社区 addon 则应 `import * as addonName from 'community-addon-name'`。通过 `npx storybook add <addon>` 或运行 `storybook dev` 时，preview 配置会被自动更新，补上必要的 addon 引用。
+
+story 文件不再从 `@storybook/your-framework` 引入 `Meta` / `StoryObj`，而是引入这份 preview 构造物：
+
+```tsx
+import preview from "../.storybook/preview";
+import { Button } from "./Button";
+
+const meta = preview.meta({
+  component: Button,
+  parameters: {
+    layout: "centered",
+  },
+});
+
+export const Primary = meta.story({
+  args: { primary: true },
+});
+```
+
+和 CSF 3 相比，有几处不只是语法糖：
+
+- `meta` 不再需要 `export default`。CSF 3 及更早版本才要求默认导出 meta。
+- 不必再手动把组件 props 类型套到 meta 或 story 上。升级文档的原话是：「Thanks to the factory function pattern, the types are now inferred automatically.」
+- `component` 既用来默认渲染，也用来自动生成 props 表和展示其他组件元数据。`title` 可以省略，Storybook 能从文件路径推断；如果手写，必须能被静态分析，且不要在文件之间重复。
+- story 文件里的相对导入 `../.storybook/preview` 会在文件被移动时断裂。官方建议改用 Node.js 的 subpath imports 或构建器 alias，例如在 `package.json` 里写 `"#*": ["./*", "./*.ts", "./*.tsx"]`。
+
+需要给组件 props 之外再添字段时，不再写那个又长又容易写错的交叉类型。`preview.meta` 默认会推断组件 props；`preview.type` 只用来声明你多出来的部分：
+
+```tsx
+type CustomArgs = { icon: "check" | "heart" | "star" };
+
+const meta = preview.type<{ args: CustomArgs }>().meta({
+  component: Button,
+  render: ({ children, icon, ...args }) => (
+    <Button {...args}>
+      <Icon name={icon} /> {children}
+    </Button>
+  ),
+});
+
+export const Primary = meta.story({
+  args: {
+    children: "Button",
+    icon: "star",
+  },
+});
+```
+
+官方强调了两条约束，这两条比「现在有类型了」更值得记住：
+
+- `preview.meta` 的 `args` 里每一个 key，都必须是故事的 arg：组件的 prop、带类型的 `render` 的参数、某个 decorator 用到的 arg，或 `preview.type` 声明过的字段。值会按这些类型检查，因此 `variant: 'primary'` 这样的字面量不必再写 `as const`。
+- 传给 `preview.type` 的类型会作用到这个文件的每一个 story。如果只有一个 story 需要额外字段，应保持 meta 不变，改用 `meta.type<{ args: CustomArgs }>().story({...})`。和 `StoryObj` 不同：这个类型里的必填 arg 必须在该 story 里给出。meta 里已经提供过的 arg 仍然可选，但你在 `meta.type` 里重新声明的那些，必须再写一遍，因为 meta 里的旧值并没有按新类型检查过。
+
+Angular 和 Web Components 还有一条单独的规则：`preview.type` 不要把组件 class 本身写进类型，只传自定义 args，例如 `preview.type<{ args: { customProp: string } }>()`。组件自己的 args 已经被推断出来，而且全部是可选的；你传入的类型会按原样使用，如果把 class 传进去，它的每个成员都会变成必填 arg。React / Vue / Svelte 上，一个同时包含组件 props 的类型仍然能工作。
+
+`.extend` 用来基于已有 story 派生新 story。合并规则和注解在 preview / meta / story 之间级联时一致：`args` 浅合并，`parameters` 深合并（数组则替换），`decorators` 和 `tags` 拼接。直接读 `Story.args`、`Story.parameters` 在 CSF 4 里仍然可用，但已被标为 deprecated；组合之后的值现在放在 `Story.composed` 上（之所以叫 composed，是因为它们来自 story、组件 meta 和 preview 三层），原始输入则在 `Story.input`。
+
+和类型相邻、但属于测试侧的变化也值得顺手记下：CSF 4 的 story 可以直接在 Vitest 里复用，不再需要先 `composeStories`；`Primary.run()` 会挂载组件并跑完 Storybook 的生命周期 hook，`Primary.Component` 则允许你自己用 Testing Library 渲染。`play` / `beforeEach` 里如果要对 `fn()` 做过的 arg 调用 mock API，需要先用 `storybook/test` 的 `mocked()` 包一层，因为这些回调里的 args 仍然按组件声明的函数类型来算，并不会自动变成 mock 类型。自动迁移 `csf-factories` 和 `csf-next-mocked-args` 会帮你加这层包装。
+
+迁移本身被设计成可增量进行：`npx storybook automigrate csf-factories` 可以从 CSF 3 批量改到 CSF 4；同一文件里不能混用不同格式。CSF 3 在 Storybook 11 里仍然被完整支持，beta 博客和迁移指南都写了这一点。[CSF 概览的 FAQ](https://storybook.js.org/docs/11/writing-stories/csf.md) 甚至说 CSF 1 / 2 / 3「for the foreseeable future」都会继续支持，并且「None of these prior formats are deprecated」。与此同时，同一套 v11 文档里许多 CSF 3 示例上方又挂着一条横幅，写 CSF 1、2、3「will be removed in a future version of Storybook」。我没有在已打开的页面里找到一个具体的移除版本号，所以更稳妥的读法是：Storybook 11 里 CSF 3 仍然可用，CSF 4 是推荐格式；「将来会删」目前还只是文档横幅，不是一份带版本号的废弃时间表。
+
+## 4. 类型流：addon 从上面注进来，args 从下面收紧
+
+![CSF 4 的类型从 definePreview 经 preview.meta 流到 meta.story；addon 在 preview 层扩展 parameters 等注解类型](/posts/csf4/type-flow.svg)
+
+工厂模式真正改变的是类型的方向。CSF 3 里，story 文件是一个孤立的类型检查单元：它知道 `typeof Button`，但不知道项目在 preview 里装了哪些 addon，也不知道你有没有在别的文件里用 `satisfies` 把 meta 和 story 接好。CSF 4 把 preview 变成类型图的根。addon 在根上注册一次，下面每个 `preview.meta`、每个 `meta.story` 都继承同一份 `parameters` / `globals` 类型；`component` 则在 meta 这一层被读入，再传给 story 的 `args`。
+
+为了把「漏写必填项 / 写错类型时到底会怎样」说清楚，我写了一个最小的泛型工厂。它**不是** Storybook 源码，也不依赖 `@storybook/*`，只保留 `definePreview → preview.meta → meta.story` 这条链上和 args、addon parameters 有关的类型。下面是这份示意的核心：
+
+```ts
+// 非官方实现 / 示意，不是 Storybook 源码
+
+type ButtonProps = {
+  label: string;
+  primary?: boolean;
+  disabled?: boolean;
+};
+
+function Button(_props: ButtonProps) {
+  return null;
+}
+
+type ProjectParams = {
+  layout?: "centered" | "fullscreen" | "padded";
+  a11y?: { options?: { xpath?: boolean } };
+};
+
+type ComponentProps<C> = C extends (props: infer P) => unknown ? P : never;
+
+type RequiredKeys<T> = {
+  [K in keyof T]-?: {} extends Pick<T, K> ? never : K;
+}[keyof T];
+
+type RemainingRequired<Args, MetaArgs> = Exclude<
+  RequiredKeys<Args>,
+  keyof MetaArgs
+>;
+
+type StoryArgsInput<Args, MetaArgs> = Partial<Args> &
+  Required<Pick<Args, RemainingRequired<Args, MetaArgs> & keyof Args>>;
+
+type StoryAnnotations<Args, MetaArgs, TParams> =
+  RemainingRequired<Args, MetaArgs> extends never
+    ? { args?: Partial<Args>; parameters?: TParams }
+    : { args: StoryArgsInput<Args, MetaArgs>; parameters?: TParams };
+
+function definePreview(annotations: {
+  addons?: unknown[];
+  parameters?: ProjectParams;
+}) {
+  return {
+    meta<C, const MetaArgs extends Partial<ComponentProps<C>> = {}>(metaAnn: {
+      component: C;
+      parameters?: ProjectParams;
+      args?: MetaArgs;
+    }) {
+      type Args = ComponentProps<C>;
+      return {
+        story(storyAnn: StoryAnnotations<Args, MetaArgs, ProjectParams>) {
+          return { preview: annotations, meta: metaAnn, story: storyAnn };
+        },
+      };
+    },
+  };
+}
+
+const preview = definePreview({
+  parameters: {
+    layout: "centered",
+    a11y: { options: { xpath: true } },
+  },
+});
+
+const meta = preview.meta({
+  component: Button,
+  parameters: { layout: "centered" },
+});
+
+export const Primary = meta.story({
+  args: { label: "Click me", primary: true },
+});
+
+const metaWithLabel = preview.meta({
+  component: Button,
+  args: { label: "OK" },
+});
+
+export const FromMeta = metaWithLabel.story({
+  args: { primary: true },
+});
+
+export const Missing = meta.story({
+  args: { primary: true },
+});
+
+export const Wrong = meta.story({
+  args: { label: "Click me", primary: "yes" },
+});
+
+export const BadParam = meta.story({
+  args: { label: "Click me" },
+  parameters: { layout: "wide" },
+});
+```
+
+`Primary` 和 `FromMeta` 可以通过检查：前者在 story 里补齐了必填的 `label`，后者把 `label` 放在 meta 上，story 就只需写可选的 `primary`。这正是官方希望 `typeof meta` 为 CSF 3 手工补上、而 CSF 4 由工厂自动完成的那件事。
+
+我用 TypeScript 5.9.3，在 `--strict --noEmit` 下编译上面这份示意，另外三个 story 的报错原文如下（行号对应该代码块）：
+
+```text
+(83,3): error TS2322: Type '{ primary: true; }' is not assignable to type 'StoryArgsInput<ButtonProps, {}>'.
+  Property 'label' is missing in type '{ primary: true; }' but required in type 'Required<Pick<ButtonProps, "label">>'.
+(87,30): error TS2322: Type 'string' is not assignable to type 'boolean | undefined'.
+(92,17): error TS2322: Type '"wide"' is not assignable to type '"centered" | "fullscreen" | "padded" | undefined'.
+```
+
+三条报错分别对应：漏写必填 `label`、把 `primary` 写成字符串、给 `layout` 一个 addon 类型里不存在的取值。请把它读成「工厂链在类型上应当拒绝什么」的演示，而不是 Storybook 发布包里的报错原文——我没有对 `@storybook/react-vite` 或其它官方包做类型检查，真实的泛型自然比这几行示意完整得多（例如 `preview.type` / `meta.type`、decorator 引入的 args、以及 addon 通过 `./preview` 导出做模块增强）。
+
+我的理解是：CSF 4 让人觉得「终于不用写 `satisfies` 了」，并不是因为它发明了一种新的故事对象，而是因为它把运行时本来就存在的那条合成链——preview 注解读到 meta，再读到 story——原样做成了 TypeScript 的调用链。类型图和运行时图重合之后，漏写、写错、写了一个 addon 不认识的 parameter，才会变成编译期错误，而不是等你打开浏览器才发现 Controls 或 addon 面板行为不对。
+
+## 5. `storybook tools`：同一套工具，两条到达方式
+
+类型解决的是「人怎么把组件的例子写对」。agent 还面临另一个问题：它怎样在不打开 `localhost:6006` 的情况下，问出「这个设计系统里有哪些组件、某个组件有哪些 props」。
+
+beta 博客把答案写成 CLI 里新增的 `tools` 命令：「exposes a fast, headless Storybook」。它既驱动官方 skills，也方便别人写自己的 skill、工具和 workflow。公开示例是：
+
+```bash
+npx storybook@next tools --help
+
+npx storybook@next tools docs list
+npx storybook@next tools docs show --id "your-component-id"
+```
+
+速度上的关键设计是分流，而不是「所有事情都无头」或「所有事情都进浏览器」。官方原话是：CLI「attaches to an existing dev server when a tool needs the browser, as `storybook tools review create` does, and bypasses the dev server entirely when it's not needed」。`review create` 要准备浏览器里的审阅页，把改动过的组件和受影响页面的 story 分组，并附上变更摘要和需要查看的关键状态，所以它必须挂到一个已经在跑的实例；`docs list` / `docs show` 只是在读组件文档，不必先起 UI。
+
+这也是官方更推荐用 skills、而不是只连 MCP 的原因。Storybook 11 仍然支持 MCP，并且把它的覆盖扩展到了所有核心框架；但博客明确建议，本地和 agent 一起用 Storybook 时，skills 是最顺手的方式，因为「they let agents fetch component context without a running Storybook instance」。skills 会在升级和新项目里自动安装，也可以从 skills.sh 以及 Claude Code / Codex 插件获取。`ui-workflow` 会引导 agent 用你的组件构建 UI、写 story、用 `storybook tools test run` 跑基于 Vitest 的功能和无障碍测试，再调用 `storybook tools review create` 把结果整理成给人看的审阅。`component-docs` 则在动手前先查已有组件。
+
+MCP 文档把同一组能力拆成三个 toolset，名字和 CLI 基本一一对应，读起来更完整：
+
+| 面向 | MCP 工具                                                            | 文档里写的作用                                                                   |
+| ---- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| 文档 | `docs-list`                                                         | 返回组件和未挂到组件上的文档条目索引                                             |
+| 文档 | `docs-show`                                                         | 某个组件的详细文档：props、前三个 story、其余 story 的索引，以及你额外提供的文档 |
+| 文档 | `docs-show-story`                                                   | 单个 story 的完整内容；`docs-show` 不够用时再调                                  |
+| 开发 | `stories-changed` / `stories-find-by-component` / `stories-preview` | 变更检测、组件到 story 的反向依赖、预览链接                                      |
+| 开发 | `get-storybook-story-instructions`                                  | 返回如何编写有用 story 的说明，包括要捕获的 props 和交互测试写法                 |
+| 开发 | `review-create`                                                     | 发布整理过的审阅页并返回 URL                                                     |
+| 测试 | `test-run`                                                          | 跑指定 story 的测试（若已配置，也包括无障碍），并让 agent 解读结果               |
+
+MCP 本身挂在 dev server 上，默认地址是 `http://localhost:6006/mcp`。文档 toolset 读取的是 components manifest；这份 manifest 默认关闭，要在 `.storybook/main.ts` 里打开 `features.componentsManifest: true`。目前会生成它的框架是所有 React 框架、`@storybook/angular-vite` 和 `@storybook/vue3-vite`。MCP 概览还写了一句和 CLI 直接相关的话：`storybook tools docs` 这套 CLI（Claude Code 和 Codex 插件也用它）会遵守同样的 `refs`，并把每个被 compose 进来的 Storybook 一并列出来。
+
+关于「CLI 的命令表面从哪里来」，我没有运行当前的 `npx storybook@next tools --help`。[PR #35719](https://github.com/storybookjs/storybook/pull/35719) 描述过一种实现：`storybook tools` 并不在 CLI 里写死各个子命令，而是用 `experimental_loadStorybook` 加载目标项目的配置，再从 `getRegisteredToolsets()` 得到命令、帮助文本和 schema；装了 addon-vitest，`test run` 才会出现。该 PR 在 2026-08 被关闭，以便以 [#35850](https://github.com/storybookjs/storybook/pull/35850) 重提，所以我把它当成设计说明，而不是一份已经冻结的 `--help` 文本。它和官方博客能够互相印证的部分只有这句：不需要浏览器的工具在独立进程里跑，需要浏览器的工具再去找已经运行的 Storybook。
+
+## 6. 元数据从哪里来：为什么 React 要换成 `react-component-meta`
+
+![组件源码与 CSF 经 react-component-meta 抽出 props，storybook tools 无头读取；需要浏览器的命令才挂到 dev server](/posts/csf4/tools-cli.svg)
+
+agent 能「列出组件并展示 props」，前提是有人在服务端把这些信息抽出来。Storybook 11 把这件事从构建器插件里搬到了 Storybook server 上。
+
+[迁移指南](https://storybook.js.org/docs/11/releases/migration-guide.md)写得很直接：Storybook 11 「reads your components' props on the Storybook server with the TypeScript compiler API」，结果用于生成 manifest、Controls、story snippet 和 code panel。`docgenServer` 在下列框架里默认打开：`@storybook/angular-vite`、`@storybook/nextjs`、`@storybook/nextjs-vite`、`@storybook/react-native-web-vite`、`@storybook/react-vite`、`@storybook/react-webpack5`、`@storybook/svelte-vite`、`@storybook/sveltekit`、`@storybook/tanstack-react`、`@storybook/vue3-vite`、`@storybook/web-components-vite`。它取代了 React 的 `typescript.reactDocgen` 和 Vue 的 `framework.options.docgen`。
+
+构建器里那条老路径被标成 deprecated，并将在 Storybook 12 移除。官方对两条旧实现的评价写在 [`typescript.reactDocgen`](https://storybook.js.org/docs/11/api/main-config/main-config-typescript.md) 上：`react-docgen-typescript` 「invokes the TypeScript compiler, which makes it slow but generally accurate」；`react-docgen` 「performs its own analysis, which is much faster but incomplete」。多年以来，React 用户实际上是在「慢而准」和「快但不完整」之间做选择。beta 博客给出的替换是 `react-component-meta`：它取代上述两个选项，「providing better accuracy and performance」。[Manifest 文档](https://storybook.js.org/docs/11/ai/manifests.md)也写明，React 的 prop 提取默认在服务端经由 React Component Meta 完成；如果关掉 `docgenServer`，manifest 生成会退回 `reactDocgen` 选出的构建器解析器，而且那份解析器需要你自己安装。
+
+`react-component-meta` 的实现细节来自已合并的 [PR #33914](https://github.com/storybookjs/storybook/pull/33914)（2026-03-23 合并），不是 beta 博客正文。按作者的说明，它用的是 TypeScript 自己的 LanguageService——也就是 IDE 自动补全背后的那套 API——来识别组件并提取 props。和 `react-docgen` 的 AST 启发式、以及 `react-docgen-typescript` 为每个文件新建一个用完即弃的 `ts.Program` 不同，它维持一个可增量更新的持久 LanguageService。架构刻意对齐 Vue Component Meta，建立在 `@volar/typescript` 和 `@volar/language-core` 上：每个 tsconfig 一个 `ComponentMetaProject`，再由 `ComponentMetaManager` 把请求路由到正确的项目；文件变更时增加 `projectVersion`，LanguageService 按 mtime 只重编变化的部分。
+
+抽取有两条路径：
+
+- **路径 1**（PR 原文写「~95%」）：`resolvePropsFromStoryFile()` 在 story 文件里找到匹配目标组件的 JSX（CSF 1，或带 `render` 的 CSF 3），再调用 `checker.getResolvedSignature()` 取出完整的 props 类型。TypeScript 会按自动补全同样的方式解析——带泛型调用签名的多态组件会用默认类型参数实例化，从而得到具体 props。作者强调他们有意不采用「注入虚拟探测文件」的办法，因为把文件插入 TS program 会作废缓存、伤害性能；扫描真实的 story 文件更快。
+- **路径 2**：`resolvePropsFromComponentType()`，用于没有 JSX、只写 args 的 CSF 3 story。它直接查看组件类型的 `getCallSignatures()[0].parameters[0]`。PR 写明这条路径对多态 / 泛型组件无效，并指向 TypeScript 的 [#61133](https://github.com/microsoft/TypeScript/issues/61133)。
+
+「~95%」是该 PR 作者对自己实现覆盖面的陈述，我没有在一个真实仓库里统计过路径 1 和路径 2 的比例。它对理解设计仍然有用：默认策略是「看组件在 story 里实际被怎样调用」，而不是「只看组件声明」。这也和 CSF 4 的类型流是同一哲学——以使用处的实例化为准。
+
+抽出来的数据会进入 components manifest。Manifest 文档说，它来自对 CSF 文件的静态分析，再加上从关联组件源码提取的 prop 类型，内容包括名称、描述、props 和用法示例。JSDoc 会被收进去，官方强烈建议给组件和 props 写注释；如果 meta 里声明了 `subcomponents`，manifest 里也会带上这些子组件的 API，哪怕它们只打算和父组件一起用。默认所有 story 和独立文档页都带 `manifest` 标签，不想让 agent 看见的示例可以打上 `!manifest`。MDX 则另外生成一份 docs manifest。
+
+有几条服务端 docgen 的行为变化，升级时比「换了一个更快的提取器」更需要心里有数：
+
+- React 的 props 来自 TypeScript 类型。默认值来自解构和 `defaultProps`，解构优先。Storybook 不再读取 `propTypes`，只靠 `propTypes` 声明 props 的组件会显示没有任何 props。
+- `propFilter` 这类构建器选项在服务端没有对应物。和过去不同，现在默认会读 `node_modules` 里的 prop 类型，但有启发式规则避免收进不必要的类型。
+- story snippet 和 code panel 是静态的，改 Controls 之后不会更新；动态 snippet 预期在 Storybook 11.1。
+- TypeScript 现在是 React / Vue 3 / Svelte / Web Components 渲染器的必需 peer dependency，最低版本 5.9。迁移指南写明：TypeScript 7.0「does not include the compiler API that Storybook uses to generate Controls and the args table」，因此这些用途需要 TypeScript 5.9 或 6.x。React 项目如果用的是 TypeScript 7.0，会退回构建器 docgen，直到 Storybook 支持 TypeScript 7.1。beta 博客预期 TS 7.1 稳定之后，docgen 还能再快约 2 倍——这和迁移指南里「现在还用不到 7.0 的编译器 API」是同一件事的两面。
+- Storybook 11 的最低运行时也包括 Node.js 22.12。这和 CSF 4 无关，但和你能不能升级到带 `tools` 命令的版本有关。
+
+把这些放在一起，CLI 的「无头」就不是变魔术。`docs list` 并没有在 Node 进程里启动一个隐藏浏览器去渲染每个 story；它读的是对 CSF 的静态分析和 LanguageService 抽出来的 props。这解释了为什么官方能把冷启动 docgen 的延迟，说成交给 agent 的上下文速度，以及为什么这条路径可以不经过 Vite / Webpack 的中间件栈。代价也同样清楚：只靠 `propTypes` 的老组件、没有 JSX 的多态组件、以及关了 `docgenServer` 之后的回退路径，看到的信息和 Controls 面板里曾经看到的不一定一致。
+
+## 7. 我的看法
+
+1. **CSF 4 的贡献是让类型图和运行时图重合，而不只是少写几行 `satisfies`。** CSF 3 其实已经能在你把 `Meta`、`StoryObj<typeof meta>` 和 `satisfies` 接对的前提下，检查非法 arg 和漏写的必填项。真正缺的是 preview 里的 addon 类型、自定义 args、以及「meta 上已经给过的值」如何自动变成 story 上的可选字段。工厂函数迫使你从项目根开始调用，类型只能沿着这条链往下流，接错环这件事本身不再可能发生。代价是每个 story 文件都要导入 preview；官方用 subpath imports 来缓释路径脆弱性，但「story 文件依赖项目级配置对象」这个方向是改不回去的，也是类型能够跨文件成立的前提。
+
+2. **`preview.type` / `meta.type` 比旧的交叉类型更诚实。** 它承认「文件级额外 args」和「单个 story 的额外 args」不是同一种扩展，并且规定：你新声明的必填字段必须在该 story 里再写一次。这比 CSF 3 里把一切 `&` 进 `Meta<PagePropsAndCustomArgs>` 更啰嗦一点，却不容易出现「类型上存在、运行时没人赋值」的空洞字段。Angular / Web Components 上「不要把 class 传进 `preview.type`」这条警告，也说明工厂并没有消除框架之间的类型模型差异，只是把差异收口到一个明确的 API 上。
+
+3. **无头 CLI 把 Storybook 从「必须打开的网站」变成「可查询的组件目录」。** 这对 agent 的意义，大于又一种写 story 的语法。skills 之所以被推荐为本地默认方式，不是因为 MCP 不好，而是因为 MCP 仍绑在 dev server 和（文档工具集所需的）`componentsManifest` 上；`docs list` 这条路径把「先起一个 UI」从关键路径上拿掉了。`review create` 仍然要浏览器，这个分流是对的：读 API 是静态问题，看视觉结果是运行时问题，不应该为了其中一个强迫你启动另一个。
+
+4. **官方的 25%、约 10 倍、再预期 2 倍，都应该当成官方自测来引用。** 「25% smaller package」和「up to 10x faster context delivery」写在宣传句里；「~10x」在后文被收窄到 Chromatic 这种大规模项目上的冷启动 docgen；「another 2x」明确是对 TypeScript 7.1 的预期。它们说明的是数量级，不是我这边能确认的绝对耗时。对升级决策更有用的，反而是那些不带倍数的边界：不再读 `propTypes`、snippet 暂时是静态的、TS 7.0 会退回旧 docgen、并非所有 addon 都能扩展类型、CSF 3 在 v11 仍然可用。
+
+5. **如果你现在就要写新的 story，我会直接用 CSF 4；如果仓库已经是 CSF 3，不必为了赶 beta 一次改完。** 官方提供了 `csf-factories` 自动迁移，也允许文件级增量升级。更值得先做的，是给组件和 props 补上 JSDoc、确认 React 项目走的是服务端 docgen 而不是 `docgenServer: false` 的回退，以及让 agent 通过 `storybook tools docs list` 先看见真实的组件目录，而不是靠训练数据猜你的 `Button` 有哪些 props。Storybook 自己在 MCP 文档里写给 agent 的那句提醒——「Never hallucinate component properties」——其实就是这条架构想解决的问题。
+
+## 参考
+
+- [Storybook 11 beta（Michael Shilman，2026-11-09）](https://storybook.js.org/blog/storybook-11-beta/)
+- [CSF 4 API：definePreview / preview.meta / meta.story](https://storybook.js.org/docs/11/writing-stories/csf/api)
+- [升级到 CSF 4](https://storybook.js.org/docs/11/writing-stories/csf/upgrade)
+- [CSF 概览（含 FAQ）](https://storybook.js.org/docs/11/writing-stories/csf.md)
+- [在 TypeScript 里写 story](https://storybook.js.org/docs/11/writing-stories/typescript.md)
+- [Storybook 11 迁移指南](https://storybook.js.org/docs/11/releases/migration-guide.md)
+- [main 配置：typescript.reactDocgen](https://storybook.js.org/docs/11/api/main-config/main-config-typescript.md)
+- [MCP server 概览](https://storybook.js.org/docs/11/ai/mcp/overview.md)
+- [Manifests](https://storybook.js.org/docs/11/ai/manifests.md)
+- [Agentic setup](https://storybook.js.org/docs/11/ai/setup.md)
+- [CLI options（含 `storybook skills`）](https://storybook.js.org/docs/11/api/cli-options.md)
+- [PR #33914：react-component-meta（LanguageService 抽取）](https://github.com/storybookjs/storybook/pull/33914)
+- [PR #35719：`storybook tools` CLI（后以 #35850 重提）](https://github.com/storybookjs/storybook/pull/35719)
+- [PR #35850：重提后的 tools CLI](https://github.com/storybookjs/storybook/pull/35850)
+- [TypeScript #61133（泛型调用签名上的限制，路径 2 提及）](https://github.com/microsoft/TypeScript/issues/61133)

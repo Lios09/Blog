@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 680" width="1040" height="680" role="img" aria-labelledby="arch-title arch-desc">
+  <title id="arch-title">Parcel 2 与 Parcel 3 的架构对比</title>
+  <desc id="arch-desc">左侧是 Parcel 2：Node 进程里的 JS 核心、插件 API 和 Worker 进程池，再经跨语言边界调用 Rust 编译器。右侧是 Parcel 3：不依赖 Node 的单一 Rust 二进制，内置 CLI、resolver、transformers、bundler 和 packager；JS 插件跑在嵌入的 QuickJS 中。</desc>
+  <rect x="12" y="12" width="1016" height="656" rx="20" fill="#f7f4ee" stroke="#e4ddd0" stroke-width="1.5"/>
+
+  <text x="48" y="52" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="22" font-weight="700" fill="#1c1917">Parcel 2 与 Parcel 3：核心放在哪一层</text>
+  <text x="48" y="78" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13.5" fill="#57534e">同一条构建管线，一边经过 Node 和跨语言边界，一边收进单一原生进程</text>
+
+  <!-- left card -->
+  <rect x="40" y="100" width="460" height="544" rx="16" fill="#fffefb" stroke="#e4ddd0" stroke-width="1.25"/>
+  <path d="M40 116a16 16 0 0 1 16-16h428a16 16 0 0 1 16 16v42H40z" fill="#44403c"/>
+  <text x="60" y="136" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="18" font-weight="700" fill="#fafaf9">Parcel 2</text>
+  <text x="168" y="136" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#d6d3d1">运行在 Node 进程里</text>
+
+  <rect x="60" y="178" width="420" height="444" rx="12" fill="#f3efe6" stroke="#e4ddd0"/>
+  <text x="78" y="204" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" font-weight="700" fill="#57534e">Node 进程</text>
+
+  <rect x="78" y="218" width="384" height="62" rx="10" fill="#ffffff" stroke="#d6d3d1"/>
+  <text x="96" y="244" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1c1917">JS 核心</text>
+  <text x="96" y="266" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="12.5" fill="#57534e">编排构建、加载配置、跑插件管线</text>
+
+  <rect x="78" y="292" width="384" height="62" rx="10" fill="#ffffff" stroke="#d6d3d1"/>
+  <text x="96" y="318" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1c1917">插件 API</text>
+  <text x="96" y="340" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="12.5" fill="#57534e">每种能力拆成独立的 npm 包</text>
+
+  <rect x="78" y="366" width="384" height="62" rx="10" fill="#ffffff" stroke="#d6d3d1"/>
+  <text x="96" y="392" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1c1917">Worker Farm</text>
+  <text x="96" y="414" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="12.5" fill="#57534e">进程之间靠序列化传递数据</text>
+
+  <line x1="270" y1="428" x2="270" y2="468" stroke="#78716c" stroke-width="1.75"/>
+  <polygon points="270,476 264,466 276,466" fill="#78716c"/>
+  <rect x="168" y="438" width="204" height="24" rx="12" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="270" y="455" text-anchor="middle" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="12" font-weight="600" fill="#9a3412">跨语言边界</text>
+
+  <rect x="78" y="484" width="384" height="72" rx="10" fill="#ecfdf5" stroke="#6ee7b7"/>
+  <text x="96" y="512" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#065f46">Rust 编译器</text>
+  <text x="96" y="534" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="12.5" fill="#047857">SWC · Lightning CSS · HTML / SVG transformer</text>
+
+  <text x="78" y="608" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="12" fill="#57534e">线程之间难以共享内存；worker 与跨语言调用都要序列化</text>
+
+  <!-- vs badge -->
+  <circle cx="520" cy="390" r="22" fill="#fffefb" stroke="#d6d3d1" stroke-width="1.5"/>
+  <text x="520" y="395" text-anchor="middle" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" font-weight="700" fill="#57534e">对比</text>
+
+  <!-- right card -->
+  <rect x="540" y="100" width="460" height="544" rx="16" fill="#fffefb" stroke="#e4ddd0" stroke-width="1.25"/>
+  <path d="M540 116a16 16 0 0 1 16-16h428a16 16 0 0 1 16 16v42H540z" fill="#0f766e"/>
+  <text x="560" y="136" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="18" font-weight="700" fill="#f0fdfa">Parcel 3</text>
+  <text x="668" y="136" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#99f6e4">独立 Rust 二进制，不依赖 Node</text>
+
+  <rect x="560" y="178" width="420" height="372" rx="12" fill="#f0fdfa" stroke="#99f6e4"/>
+  <text x="578" y="204" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" font-weight="700" fill="#0f766e">单一原生进程 · 线程共享地址空间</text>
+
+  <rect x="578" y="218" width="384" height="48" rx="10" fill="#ffffff" stroke="#5eead4"/>
+  <text x="596" y="248" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#134e4a">CLI / 开发服务器</text>
+
+  <rect x="578" y="276" width="384" height="48" rx="10" fill="#ffffff" stroke="#5eead4"/>
+  <text x="596" y="306" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#134e4a">Resolver</text>
+
+  <rect x="578" y="334" width="384" height="48" rx="10" fill="#ffffff" stroke="#5eead4"/>
+  <text x="596" y="364" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#134e4a">Transformers（HTML / CSS / JS / TS / SVG…）</text>
+
+  <rect x="578" y="392" width="384" height="48" rx="10" fill="#ffffff" stroke="#5eead4"/>
+  <text x="596" y="422" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#134e4a">Bundler</text>
+
+  <rect x="578" y="450" width="384" height="48" rx="10" fill="#ffffff" stroke="#5eead4"/>
+  <text x="596" y="480" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#134e4a">Packager / Optimizer（打包由核心完成）</text>
+
+  <rect x="560" y="562" width="420" height="62" rx="12" fill="#ecfdf5" stroke="#6ee7b7"/>
+  <text x="578" y="588" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" font-weight="700" fill="#065f46">JS / TS 插件跑在嵌入的 QuickJS 里</text>
+  <text x="578" y="608" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="12.5" fill="#047857">需要极限性能时写原生插件（Rust / Go / Swift / C）</text>
+</svg>
