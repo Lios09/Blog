@@ -66,22 +66,6 @@ Quicksilver 的输出在这里有两部分。记录 key 保存一个区、一个
 
 还有一个刻意留下的例外。一次全量构建会同时把数据库里的全部记录和 Quicksilver 里该区已有的全部 key 放进内存，而最大的那些区放不下。超过一个固定的记录数阈值之后，Zone Builder 不再升级到全量构建，而是重建顶点、元数据，以及排队事件里指出的每一个名字。作者接受这个取舍，因为对这些区做全量构建根本完成不了，重试期间还会拖住同一 Kafka 分区上别人的变更。许多「本该全量」的情形来自多个区共享一个名字，而 zone hold 通过阻止同一个名字被加到另一个账户，降低了这种风险。剩下的罕见情形，比如在另一个网络上启用一个区，他们可以手工重建区里的个别名字。文章没有写出这个记录数阈值是多少，所以我也不去猜。
 
-{/_ <Mermaid
-chart={`flowchart TD
-  ev[事件到达规划器] --> known{能证明它会影响哪些名字、<br/>会不会改共享元数据吗?}
-  known -->|不能：缺细节、未知事件、<br/>只更新了时间戳、或可能影响区里任意记录| full[Full zone]
-  known -->|区对当前网络不应再发布| purge[Purge]
-  known -->|普通 A / AAAA / TXT / CNAME| res[Resources only]
-  known -->|nameserver 或通配符| resmeta[Resources and metadata]
-  known -->|Universal SSL 等可走顶点路径的设置| apex[Apex and metadata]
-  res --> eq{定向写出的每个 key<br/>能证明与全量字节级一致?}
-  resmeta --> eq
-  apex --> eq
-  eq -->|不能| full
-  eq -->|能| run[执行这次定向构建]
-`}
-/> _/}
-
 ```mermaid
 flowchart TD
 ev[事件到达规划器] --> known{能证明它会影响哪些名字、<br/>会不会改共享元数据吗?}
