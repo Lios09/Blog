@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560" role="img" aria-labelledby="title desc">
+  <title id="title">Kafka soft commit：乱序完成，只推进连续完成的低水位</title>
+  <desc id="desc">分区上的消息 1 已完成并提交；消息 2 仍在运行，挡住提交水位；消息 3 到 6 已在内存中完成但不能提交。若此时进程重启，内存中的完成标记消失，Kafka 从水位之后重放 2 到 6，用重复劳动换不丢变更。</desc>
+  <rect width="960" height="560" fill="#f7f4ee"/>
+  <text x="480" y="36" text-anchor="middle" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="20" font-weight="700" fill="#1f2933">Soft commit：完成可以乱序，提交位移必须是前缀</text>
+  <text x="480" y="60" text-anchor="middle" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#5b6770">Kafka 为每个分区保存一个 committed offset：这一点之前的每条消息都已知完成</text>
+
+  <!-- offset boxes -->
+  <g font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif">
+    <!-- 1 committed -->
+    <rect x="40" y="100" width="130" height="110" rx="10" fill="#ecfdf5" stroke="#047857" stroke-width="2"/>
+    <text x="105" y="132" text-anchor="middle" font-size="18" font-weight="700" fill="#047857">offset 1</text>
+    <text x="105" y="158" text-anchor="middle" font-size="13" fill="#065f46">已完成</text>
+    <text x="105" y="180" text-anchor="middle" font-size="13" fill="#065f46">且已提交</text>
+    <text x="105" y="198" text-anchor="middle" font-size="12" fill="#047857">普通 A 记录</text>
+
+    <!-- 2 blocking -->
+    <rect x="190" y="100" width="130" height="110" rx="10" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+    <text x="255" y="132" text-anchor="middle" font-size="18" font-weight="700" fill="#c2410c">offset 2</text>
+    <text x="255" y="158" text-anchor="middle" font-size="13" fill="#9a3412">仍在运行</text>
+    <text x="255" y="180" text-anchor="middle" font-size="13" fill="#9a3412">挡住水位</text>
+    <text x="255" y="198" text-anchor="middle" font-size="12" fill="#c2410c">一次大构建</text>
+
+    <!-- 3-6 done in memory -->
+    <rect x="340" y="100" width="110" height="110" rx="10" fill="#eff6ff" stroke="#1d4ed8" stroke-width="2"/>
+    <text x="395" y="138" text-anchor="middle" font-size="18" font-weight="700" fill="#1d4ed8">offset 3</text>
+    <text x="395" y="168" text-anchor="middle" font-size="13" fill="#1e3a8a">内存中</text>
+    <text x="395" y="188" text-anchor="middle" font-size="13" fill="#1e3a8a">已完成</text>
+
+    <rect x="470" y="100" width="110" height="110" rx="10" fill="#eff6ff" stroke="#1d4ed8" stroke-width="2"/>
+    <text x="525" y="138" text-anchor="middle" font-size="18" font-weight="700" fill="#1d4ed8">offset 4</text>
+    <text x="525" y="168" text-anchor="middle" font-size="13" fill="#1e3a8a">内存中</text>
+    <text x="525" y="188" text-anchor="middle" font-size="13" fill="#1e3a8a">已完成</text>
+
+    <rect x="600" y="100" width="110" height="110" rx="10" fill="#eff6ff" stroke="#1d4ed8" stroke-width="2"/>
+    <text x="655" y="138" text-anchor="middle" font-size="18" font-weight="700" fill="#1d4ed8">offset 5</text>
+    <text x="655" y="168" text-anchor="middle" font-size="13" fill="#1e3a8a">内存中</text>
+    <text x="655" y="188" text-anchor="middle" font-size="13" fill="#1e3a8a">已完成</text>
+
+    <rect x="730" y="100" width="110" height="110" rx="10" fill="#eff6ff" stroke="#1d4ed8" stroke-width="2"/>
+    <text x="785" y="138" text-anchor="middle" font-size="18" font-weight="700" fill="#1d4ed8">offset 6</text>
+    <text x="785" y="168" text-anchor="middle" font-size="13" fill="#1e3a8a">内存中</text>
+    <text x="785" y="188" text-anchor="middle" font-size="13" fill="#1e3a8a">已完成</text>
+
+    <text x="870" y="158" font-size="20" fill="#64748b">…</text>
+  </g>
+
+  <!-- watermark arrow -->
+  <path d="M40 250 H190" stroke="#047857" stroke-width="3" fill="none"/>
+  <polygon points="190,244 190,256 204,250" fill="#047857"/>
+  <text x="115" y="274" text-anchor="middle" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" font-weight="700" fill="#047857">已提交水位 = 1</text>
+  <text x="530" y="274" text-anchor="middle" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#1d4ed8">3–6 完成得更早，但不能把 Kafka 位移推过尚未完成的 2</text>
+
+  <!-- restart panel -->
+  <rect x="70" y="310" width="820" height="200" rx="12" fill="#ffffff" stroke="#334155" stroke-width="1.5"/>
+  <text x="94" y="344" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="16" font-weight="700" fill="#1f2933">如果此时 Zone Builder 进程重启</text>
+  <text x="94" y="376" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="14" fill="#334155">1. 内存里「3、4、5、6 已完成」的标记随之消失</text>
+  <text x="94" y="404" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="14" fill="#334155">2. Kafka 仍然认为 committed position 停在 1：这一点之后的消息都还不能算完成</text>
+  <text x="94" y="432" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="14" fill="#334155">3. 消费者从 offset 2 起重放，2 到 6 会再做一遍</text>
+  <text x="94" y="468" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="14" fill="#334155">官方原文把这个取舍写得很干脆：deliberately choose repeated work over losing a change。</text>
+  <text x="94" y="492" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#64748b">之所以重放是安全的：构建的真相来源是当前数据库状态，事件只用来缩小工作范围，而不是当作要应用的补丁。</text>
+</svg>
