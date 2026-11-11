@@ -18,6 +18,7 @@ export function Mermaid({ chart }: Props) {
   const id = useId().replace(/:/g, "");
   const { resolvedTheme } = useTheme();
   const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
   const theme = mermaidTheme(resolvedTheme);
 
   useEffect(() => {
@@ -25,7 +26,6 @@ export function Mermaid({ chart }: Props) {
     if (!host || !theme) return;
 
     let cancelled = false;
-    setReady(false);
 
     (async () => {
       try {
@@ -38,11 +38,13 @@ export function Mermaid({ chart }: Props) {
         });
         if (cancelled || ref.current !== host) return;
         host.innerHTML = svg;
+        setFailed(false);
         setReady(true);
       } catch {
         if (cancelled || ref.current !== host) return;
         host.innerHTML = "";
         setReady(false);
+        setFailed(true);
       }
     })();
 
@@ -55,16 +57,28 @@ export function Mermaid({ chart }: Props) {
     <div
       className={cn(
         "not-prose my-8 overflow-x-auto",
-        // 768/809 matches the rendered flowchart at the article width.
-        !ready && "aspect-768/809 min-h-64",
+        !ready && !failed && "min-h-64",
       )}
     >
-      <div ref={ref} className="[&_svg]:h-auto [&_svg]:max-w-full" />
-      {ready ? null : (
+      <div
+        ref={ref}
+        className="[&_svg]:h-auto [&_svg]:max-w-full"
+        role="img"
+        aria-label={chart}
+        aria-hidden={ready ? undefined : true}
+      />
+      {failed ? <p>Unable to render Mermaid diagram.</p> : null}
+      <pre
+        hidden={!failed}
+        className="overflow-x-auto whitespace-pre font-mono text-sm"
+      >
+        {chart}
+      </pre>
+      <noscript>
         <pre className="overflow-x-auto whitespace-pre font-mono text-sm">
           {chart}
         </pre>
-      )}
+      </noscript>
     </div>
   );
 }
