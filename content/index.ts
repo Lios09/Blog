@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { parsePost } from "./parser";
 import { getPostSlugs, getPostSource } from "./repository";
 import { transformPost } from "./transformer";
@@ -20,12 +21,12 @@ export function getPostBySlug(slug: string): Post | null {
   return post;
 }
 
-export function getAllPosts() {
+export const getAllPosts = cache(() => {
   return getPostSlugs()
     .map(getPostBySlug)
     .filter((post): post is Post => post !== null)
     .sort((a, b) => b.metadata.date.getTime() - a.metadata.date.getTime());
-}
+});
 
 export function getPostsByTag(tag: string) {
   return getAllPosts().filter((post) => post.metadata.tags.includes(tag));
