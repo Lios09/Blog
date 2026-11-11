@@ -8,6 +8,22 @@ export function remarkCode() {
         return;
       }
 
+      if (node.lang?.toLowerCase() === "mermaid") {
+        parent.children[index] = {
+          type: "mdxJsxFlowElement",
+          name: "Mermaid",
+          attributes: [
+            {
+              type: "mdxJsxAttribute",
+              name: "chart",
+              value: node.value,
+            },
+          ],
+          children: [],
+        };
+        return;
+      }
+
       const meta = [node.lang, node.meta].filter(Boolean).join(" ");
 
       parent.children[index] = {
