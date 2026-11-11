@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 680" width="960" height="680" role="img" aria-labelledby="title desc">
+  <title id="title">BEDROCK、DUAL、DECIDER 三档开关与影子对比</title>
+  <desc id="desc">Lambda 每条消息从 AWS AppConfig 读取三档开关。BEDROCK 只让 Sonnet 打标，不调用 Decider。DUAL 并行调用两者，采用 Sonnet 的结果打到工单上，同时比较 Decider 并审阅分歧。DECIDER 只让 Decider 打标，不再调用 Bedrock。从 DECIDER 改回 BEDROCK 是一次约 45 秒的配置变更。</desc>
+  <rect width="960" height="680" fill="#f7f4ee"/>
+  <text x="480" y="34" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="20" font-weight="700" fill="#1f2933">先双跑，再切换；回滚是改配置</text>
+  <text x="480" y="56" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#5b6770">Lambda 每条消息从 AWS AppConfig 读取 BEDROCK / DUAL / DECIDER</text>
+
+  <rect x="70" y="76" width="240" height="56" rx="10" fill="#ffffff" stroke="#1f6feb" stroke-width="2"/>
+  <path d="M80 76 H82 V132 H80 A10 10 0 0 1 70 122 V86 A10 10 0 0 1 80 76 Z" fill="#1f6feb"/>
+  <text x="98" y="110" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="14" font-weight="700" fill="#1f6feb">工单事件（SQS）</text>
+
+  <path d="M310 104 H368" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <polygon points="368,98 368,110 380,104" fill="#1f2933"/>
+
+  <rect x="380" y="76" width="280" height="56" rx="10" fill="#ffffff" stroke="#7c3aed" stroke-width="2"/>
+  <path d="M390 76 H392 V132 H390 A10 10 0 0 1 380 122 V86 A10 10 0 0 1 390 76 Z" fill="#7c3aed"/>
+  <text x="408" y="100" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="14" font-weight="700" fill="#7c3aed">Lambda + AppConfig</text>
+  <text x="408" y="120" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="12" fill="#334155">每条消息读一次三档开关</text>
+
+  <path d="M660 104 H718" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <polygon points="718,98 718,110 730,104" fill="#1f2933"/>
+
+  <rect x="730" y="76" width="160" height="56" rx="10" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
+  <text x="810" y="110" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="14" font-weight="700" fill="#b45309">按档分流</text>
+
+  <path d="M810 132 v20" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <path d="M180 152 H810" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <path d="M180 152 v22" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <path d="M480 152 v22" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <path d="M780 152 v22" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <polygon points="174,174 186,174 180,184" fill="#1f2933"/>
+  <polygon points="474,174 486,174 480,184" fill="#1f2933"/>
+  <polygon points="774,174 786,174 780,184" fill="#1f2933"/>
+
+  <rect x="40" y="180" width="280" height="330" rx="12" fill="#ffffff" stroke="#64748b" stroke-width="2"/>
+  <rect x="40" y="180" width="280" height="48" rx="12" fill="#e2e8f0"/>
+  <rect x="40" y="204" width="280" height="24" fill="#e2e8f0"/>
+  <text x="180" y="210" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="16" font-weight="700" fill="#334155">BEDROCK</text>
+  <text x="64" y="256" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="14" font-weight="700" fill="#1f6feb">只调用 Sonnet 4.6</text>
+  <text x="64" y="284" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">Bedrock 给每张工单打标</text>
+  <text x="64" y="312" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">不调用 Strands Decider</text>
+  <text x="64" y="350" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">生产线行为保持原样，</text>
+  <text x="64" y="370" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">用来做对照基线，也是</text>
+  <text x="64" y="390" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">回滚时要回到的档位。</text>
+  <rect x="64" y="420" width="232" height="64" rx="8" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+  <text x="180" y="446" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" font-weight="700" fill="#334155">写回工单的结果</text>
+  <text x="180" y="468" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">来自 Sonnet</text>
+
+  <rect x="340" y="180" width="280" height="330" rx="12" fill="#ffffff" stroke="#7c3aed" stroke-width="2"/>
+  <rect x="340" y="180" width="280" height="48" rx="12" fill="#ede9fe"/>
+  <rect x="340" y="204" width="280" height="24" fill="#ede9fe"/>
+  <text x="480" y="210" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="16" font-weight="700" fill="#5b21b6">DUAL</text>
+  <text x="364" y="256" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="14" font-weight="700" fill="#7c3aed">两者并行调用</text>
+  <text x="364" y="284" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">Sonnet 与 Decider 同时跑</text>
+  <text x="364" y="312" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">采用 Sonnet 的结果打标</text>
+  <text x="364" y="350" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">Decider 只做影子对比，</text>
+  <text x="364" y="370" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">每一处分歧都拿来人工</text>
+  <text x="364" y="390" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">判断。这比离线评估更有用。</text>
+  <rect x="364" y="420" width="232" height="64" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="480" y="446" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" font-weight="700" fill="#5b21b6">写回工单的结果</text>
+  <text x="480" y="468" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">仍来自 Sonnet；Decider 只对比</text>
+
+  <rect x="640" y="180" width="280" height="330" rx="12" fill="#ffffff" stroke="#047857" stroke-width="2"/>
+  <rect x="640" y="180" width="280" height="48" rx="12" fill="#d1fae5"/>
+  <rect x="640" y="204" width="280" height="24" fill="#d1fae5"/>
+  <text x="780" y="210" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="16" font-weight="700" fill="#065f46">DECIDER</text>
+  <text x="664" y="256" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="14" font-weight="700" fill="#047857">只调用 Decider</text>
+  <text x="664" y="284" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">由 Decider 给每张工单打标</text>
+  <text x="664" y="312" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">不再调用 Bedrock</text>
+  <text x="664" y="350" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">切到这一档之后，延迟和</text>
+  <text x="664" y="370" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">费用才落到他们公布的</text>
+  <text x="664" y="390" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">那一组数字上。</text>
+  <rect x="664" y="420" width="232" height="64" rx="8" fill="#ecfdf3" stroke="#047857" stroke-width="1.5"/>
+  <text x="780" y="446" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" font-weight="700" fill="#065f46">写回工单的结果</text>
+  <text x="780" y="468" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">来自 Decider</text>
+
+  <rect x="40" y="534" width="880" height="116" rx="12" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
+  <path d="M52 534 H52 V650 H52 A12 12 0 0 1 40 638 V546 A12 12 0 0 1 52 534 Z" fill="#b45309"/>
+  <text x="68" y="568" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="15" font-weight="700" fill="#b45309">回滚不需要重新部署</text>
+  <text x="68" y="594" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">从 DECIDER 改回 BEDROCK 是一次大约 45 秒的配置变更。DUAL 档让新模型先在真实流量上暴露分歧，</text>
+  <text x="68" y="616" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">同时保证写回工单的仍是旧路径。作者写道：在真实流量上双跑、再判断每一处分歧，比任何离线评估告诉他们的都多。</text>
+</svg>

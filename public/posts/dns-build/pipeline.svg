@@ -8,12 +8,12 @@
 
   <!-- sources -->
   <rect x="70" y="84" width="380" height="72" rx="10" fill="#ffffff" stroke="#1f6feb" stroke-width="2"/>
-  <rect x="70" y="84" width="12" height="72" fill="#1f6feb"/>
+  <path d="M80 84 H82 V156 H80 A10 10 0 0 1 70 146 V94 A10 10 0 0 1 80 84 Z" fill="#1f6feb"/>
   <text x="98" y="114" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1f6feb">DNS Records API / 控制台</text>
   <text x="98" y="138" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">客户修改一条 DNS 记录</text>
 
   <rect x="510" y="84" width="380" height="72" rx="10" fill="#ffffff" stroke="#1f6feb" stroke-width="2"/>
-  <rect x="510" y="84" width="12" height="72" fill="#1f6feb"/>
+  <path d="M520 84 H522 V156 H520 A10 10 0 0 1 510 146 V94 A10 10 0 0 1 520 84 Z" fill="#1f6feb"/>
   <text x="538" y="114" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#1f6feb">区域设置 / 内部服务</text>
   <text x="538" y="138" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">例如 Universal SSL，或其他产品改动区域</text>
 
@@ -24,12 +24,12 @@
 
   <!-- db + kafka -->
   <rect x="70" y="196" width="380" height="72" rx="10" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
-  <rect x="70" y="196" width="12" height="72" fill="#0f766e"/>
+  <path d="M80 196 H82 V268 H80 A10 10 0 0 1 70 258 V206 A10 10 0 0 1 80 196 Z" fill="#0f766e"/>
   <text x="98" y="226" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#0f766e">数据库</text>
   <text x="98" y="250" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">变更先落库；构建以当前库状态为准</text>
 
   <rect x="510" y="196" width="380" height="72" rx="10" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
-  <rect x="510" y="196" width="12" height="72" fill="#0f766e"/>
+  <path d="M520 196 H522 V268 H520 A10 10 0 0 1 510 258 V206 A10 10 0 0 1 520 196 Z" fill="#0f766e"/>
   <text x="538" y="226" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#0f766e">Kafka topic</text>
   <text x="538" y="250" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">库变更或其他系统发出事件</text>
 
@@ -42,7 +42,7 @@
 
   <!-- aggregator -->
   <rect x="160" y="320" width="640" height="80" rx="10" fill="#ffffff" stroke="#7c3aed" stroke-width="2"/>
-  <rect x="160" y="320" width="12" height="80" fill="#7c3aed"/>
+  <path d="M170 320 H172 V400 H170 A10 10 0 0 1 160 390 V330 A10 10 0 0 1 170 320 Z" fill="#7c3aed"/>
   <text x="188" y="350" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#7c3aed">DNS Kafka Aggregator</text>
   <text x="188" y="374" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">合并多个 Kafka topic，并延迟一段时间，以覆盖数据库副本的正常复制滞后</text>
   <text x="188" y="394" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">再把事件送给 Zone Builder。Kafka 投递和数据库复制是独立前进的。</text>
@@ -75,7 +75,7 @@
 
   <!-- quicksilver -->
   <rect x="160" y="648" width="640" height="56" rx="10" fill="#ffffff" stroke="#be185d" stroke-width="2"/>
-  <rect x="160" y="648" width="12" height="56" fill="#be185d"/>
+  <path d="M170 648 H172 V704 H170 A10 10 0 0 1 160 694 V658 A10 10 0 0 1 170 648 Z" fill="#be185d"/>
   <text x="188" y="672" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="15" font-weight="700" fill="#be185d">Quicksilver（分布式 KV）</text>
   <text x="188" y="694" font-family="'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', system-ui, sans-serif" font-size="13" fill="#334155">只写入变化的 key，再传播到 Cloudflare 网络；权威 DNS 服务器从这里读取答案</text>
 

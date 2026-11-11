@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 800" width="960" height="800" role="img" aria-labelledby="title desc">
+  <title id="title">工单分类请求流：从工单到打标或升级</title>
+  <desc id="desc">工单事件进入 SQS，由 Lambda 读取。先对 JSON 键排序，过长则丢掉最旧的评论。再把工单作为状态，把二十条一两句判据加上 none 作为选项，送给 Strands Decider。模型返回每个选项的概率和置信度：置信度够高且不是 none 就应用标签并路由，否则升级、不自动打标。</desc>
+  <rect width="960" height="800" fill="#f7f4ee"/>
+  <text x="480" y="34" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="20" font-weight="700" fill="#1f2933">工单如何变成一次可弃权的打标</text>
+  <text x="480" y="56" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#5b6770">按 Amazon 2026-11-09 博客的路径简化：SQS → Lambda → SageMaker 上的 Strands Decider</text>
+
+  <rect x="180" y="76" width="600" height="64" rx="10" fill="#ffffff" stroke="#1f6feb" stroke-width="2"/>
+  <path d="M190 76 H192 V140 H190 A10 10 0 0 1 180 130 V86 A10 10 0 0 1 190 76 Z" fill="#1f6feb"/>
+  <text x="208" y="102" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="15" font-weight="700" fill="#1f6feb">工单事件（SQS）</text>
+  <text x="208" y="124" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">客户升级、容量申请、自动告警、安全发现等，要归入约 20 类</text>
+
+  <path d="M480 140 v16" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <polygon points="474,156 486,156 480,166" fill="#1f2933"/>
+
+  <rect x="180" y="168" width="600" height="64" rx="10" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+  <path d="M190 168 H192 V232 H190 A10 10 0 0 1 180 222 V178 A10 10 0 0 1 190 168 Z" fill="#0f766e"/>
+  <text x="208" y="194" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="15" font-weight="700" fill="#0f766e">Lambda 读取工单</text>
+  <text x="208" y="216" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">除工单 API 外，路径上是标准 AWS 服务；模型跑在隔离网络的端点里</text>
+
+  <path d="M480 232 v16" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <polygon points="474,248 486,248 480,258" fill="#1f2933"/>
+
+  <rect x="180" y="260" width="600" height="76" rx="10" fill="#ffffff" stroke="#7c3aed" stroke-width="2"/>
+  <path d="M190 260 H192 V336 H190 A10 10 0 0 1 180 326 V270 A10 10 0 0 1 190 260 Z" fill="#7c3aed"/>
+  <text x="208" y="286" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="15" font-weight="700" fill="#7c3aed">规范化 canonicalize</text>
+  <text x="208" y="308" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">对 JSON 键排序，避免同一内容因序列化顺序不同而得到不同概率</text>
+  <text x="208" y="326" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">过长则丢掉最旧的评论，以放进 4,096 token 的窗口</text>
+
+  <path d="M480 336 v16" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <polygon points="474,352 486,352 480,362" fill="#1f2933"/>
+
+  <rect x="100" y="364" width="760" height="148" rx="12" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
+  <text x="120" y="390" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="15" font-weight="700" fill="#b45309">Strands Decider（SageMaker 端点）</text>
+  <text x="120" y="410" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="12" fill="#64748b">一次前向，没有解码循环；pointer head 给每个选项一个 logit。模型不能生成自由文本。</text>
+
+  <rect x="120" y="424" width="220" height="68" rx="8" fill="#fff7ed" stroke="#b45309" stroke-width="1.5"/>
+  <text x="230" y="450" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" font-weight="700" fill="#b45309">state</text>
+  <text x="230" y="472" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="12" fill="#334155">工单正文（与 Sonnet 相同）</text>
+
+  <rect x="360" y="424" width="220" height="68" rx="8" fill="#fff7ed" stroke="#b45309" stroke-width="1.5"/>
+  <text x="470" y="450" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" font-weight="700" fill="#b45309">question</text>
+  <text x="470" y="472" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="12" fill="#334155">这张工单该打哪个标签？</text>
+
+  <rect x="600" y="424" width="240" height="68" rx="8" fill="#fff7ed" stroke="#b45309" stroke-width="1.5"/>
+  <text x="720" y="450" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" font-weight="700" fill="#b45309">options</text>
+  <text x="720" y="472" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="12" fill="#334155">20 条一两句判据 + none</text>
+
+  <path d="M480 512 v16" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <polygon points="474,528 486,528 480,538" fill="#1f2933"/>
+
+  <rect x="180" y="540" width="600" height="64" rx="10" fill="#ffffff" stroke="#be185d" stroke-width="2"/>
+  <path d="M190 540 H192 V604 H190 A10 10 0 0 1 180 594 V550 A10 10 0 0 1 190 540 Z" fill="#be185d"/>
+  <text x="208" y="566" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="15" font-weight="700" fill="#be185d">每个选项的概率 + 一个置信度</text>
+  <text x="208" y="588" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="13" fill="#334155">choice 的置信度由最大概率归一化得到，不另训练一个分数头</text>
+
+  <path d="M480 604 v16" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <polygon points="474,620 486,620 480,630" fill="#1f2933"/>
+
+  <rect x="230" y="632" width="500" height="48" rx="10" fill="#ffffff" stroke="#1f2933" stroke-width="2"/>
+  <text x="480" y="662" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="14" font-weight="700" fill="#1f2933">置信度达到阈值，且最高项不是 none？</text>
+
+  <path d="M360 680 v16 H260 v10" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <polygon points="254,706 266,706 260,716" fill="#1f2933"/>
+  <path d="M600 680 v16 H700 v10" stroke="#1f2933" stroke-width="2" fill="none"/>
+  <polygon points="694,706 706,706 700,716" fill="#1f2933"/>
+
+  <rect x="80" y="720" width="360" height="56" rx="10" fill="#ecfdf3" stroke="#047857" stroke-width="2"/>
+  <text x="260" y="742" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="14" font-weight="700" fill="#047857">是：应用标签，按类路由</text>
+  <text x="260" y="762" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="12" fill="#334155">自动打标</text>
+
+  <rect x="520" y="720" width="360" height="56" rx="10" fill="#fff1f2" stroke="#be123c" stroke-width="2"/>
+  <text x="700" y="742" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="14" font-weight="700" fill="#be123c">否：升级，不自动打标</text>
+  <text x="700" y="762" text-anchor="middle" font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif" font-size="12" fill="#334155">置信度不够，或模型选了 none</text>
+</svg>
