@@ -5,7 +5,6 @@ import { PostContent } from "@/components/blog/post-content";
 import { PostHeader } from "@/components/blog/post-header";
 import { RelatedPosts } from "@/components/blog/related-posts";
 import { TableOfContents } from "@/components/blog/table-of-contents";
-import { LineNav } from "@/components/line-nav";
 import { getAllPosts, getPostBySlug } from "@/content";
 import { getRelatedPosts } from "@/content/related";
 
@@ -84,16 +83,6 @@ export default async function PostPage({ params }: Props) {
   return (
     <div className="mx-auto min-h-svh bg-background px-6 font-mono">
       <div className="grid gap-x-8 md:items-start">
-        <aside className="fixed top-30 left-6 w-max max-w-50 self-start rounded-[0.75rem] border p-3 max-xl:hidden">
-          <LineNav
-            activeHref={`/blog/${slug}`}
-            items={allPosts?.map(({ metadata, slug: postSlug }) => ({
-              title: metadata.title,
-              href: `/blog/${postSlug}`,
-            }))}
-          />
-        </aside>
-
         <article className="mx-auto max-w-6xl px-6 py-8">
           {mathStyles}
           <div className="grid lg:gap-6">
