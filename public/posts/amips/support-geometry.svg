@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 600" width="960" height="600" role="img" aria-labelledby="t d">
+<title id="t">质心分数和簇内真实最大内积</title>
+<desc id="d">二维玩具数据：紧凑簇 A 和长条形簇 B，查询 q 指向正上方。沿 q 方向的内积就是纵坐标。A 的质心分数 0.50，簇内最大 0.54；B 的质心分数 -0.05，但簇内最大 0.85。质心路由选 A，真正的最佳 key 在 B。水平虚线是每个簇在 q 方向上的支撑线，它的高度就是支撑函数值。</desc>
+<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1f2933"/></marker></defs>
+<rect width="960" height="600" fill="#f7f4ee"/>
+<g font-family="'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',system-ui,sans-serif">
+<text x="480" y="36" text-anchor="middle" font-size="21" font-weight="700" fill="#1f2933">质心只代表「平均水平」，路由要的是「最好能有多好」</text>
+<text x="480" y="60" text-anchor="middle" font-size="13" fill="#5b6770">q = (0, 1)，所以 ⟨q, y⟩ 就是点的纵坐标；数据和数字来自文中的 numpy 小例子</text>
+<line x1="90.0" y1="390.0" x2="465.0" y2="390.0" stroke="#c4bdb0" stroke-width="1"/>
+<line x1="120.0" y1="540.0" x2="120.0" y2="90.0" stroke="#c4bdb0" stroke-width="1"/>
+<text x="102.0" y="514.0" text-anchor="end" font-size="11" fill="#8b949e">-0.4</text>
+<text x="102.0" y="394.0" text-anchor="end" font-size="11" fill="#8b949e">0</text>
+<text x="102.0" y="274.0" text-anchor="end" font-size="11" fill="#8b949e">0.4</text>
+<text x="102.0" y="154.0" text-anchor="end" font-size="11" fill="#8b949e">0.8</text>
+<line x1="90.0" y1="228.0" x2="465.0" y2="228.0" stroke="#2f6f4f" stroke-width="1.4" stroke-dasharray="6 4"/>
+<text x="461.0" y="222.0" text-anchor="end" font-size="12" fill="#2f6f4f" font-family="ui-monospace,SFMono-Regular,Menlo,'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',monospace">σ_A(q) = 0.54</text>
+<line x1="90.0" y1="135.0" x2="465.0" y2="135.0" stroke="#b5452b" stroke-width="1.4" stroke-dasharray="6 4"/>
+<text x="461.0" y="129.0" text-anchor="end" font-size="12" fill="#b5452b" font-family="ui-monospace,SFMono-Regular,Menlo,'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',monospace">σ_B(q) = 0.85</text>
+<line x1="90.0" y1="240.0" x2="465.0" y2="240.0" stroke="#2f6f4f" stroke-width="0.9" stroke-opacity="0.55"/>
+<text x="128" y="255.0" font-size="12" fill="#2f6f4f" fill-opacity="0.85" font-family="ui-monospace,SFMono-Regular,Menlo,'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',monospace">⟨q,c_A⟩ = 0.50</text>
+<line x1="90.0" y1="405.0" x2="465.0" y2="405.0" stroke="#b5452b" stroke-width="0.9" stroke-opacity="0.55"/>
+<text x="128" y="420.0" font-size="12" fill="#b5452b" fill-opacity="0.85" font-family="ui-monospace,SFMono-Regular,Menlo,'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',monospace">⟨q,c_B⟩ = −0.05</text>
+<polygon points="318.0,228.0 324.0,246.0 330.0,252.0 336.0,234.0" fill="#2f6f4f" fill-opacity="0.12" stroke="#2f6f4f" stroke-width="1.5"/>
+<polygon points="180.0,135.0 390.0,480.0 405.0,495.0 420.0,510.0" fill="#b5452b" fill-opacity="0.10" stroke="#b5452b" stroke-width="1.5"/>
+<circle cx="324.0" cy="246.0" r="4.5" fill="#2f6f4f"/>
+<circle cx="336.0" cy="234.0" r="4.5" fill="#2f6f4f"/>
+<circle cx="330.0" cy="252.0" r="4.5" fill="#2f6f4f"/>
+<circle cx="318.0" cy="228.0" r="4.5" fill="#2f6f4f"/>
+<circle cx="420.0" cy="510.0" r="4.5" fill="#b5452b"/>
+<circle cx="390.0" cy="480.0" r="4.5" fill="#b5452b"/>
+<circle cx="405.0" cy="495.0" r="4.5" fill="#b5452b"/>
+<circle cx="180.0" cy="135.0" r="4.5" fill="#b5452b"/>
+<path d="M321.0,234.0 L333.0,246.0 M321.0,246.0 L333.0,234.0" stroke="#2f6f4f" stroke-width="2.4"/>
+<text x="344.0" y="266.0" font-size="13" fill="#2f6f4f" font-weight="700">c_A</text>
+<path d="M342.8,399.0 L354.8,411.0 M342.8,411.0 L354.8,399.0" stroke="#b5452b" stroke-width="2.4"/>
+<text x="362.0" y="426.0" font-size="13" fill="#b5452b" font-weight="700">c_B</text>
+<circle cx="180.0" cy="135.0" r="9" fill="none" stroke="#b5452b" stroke-width="1.8"/>
+<text x="212.0" y="159.0" font-size="12" fill="#b5452b">y⋆ = (0.20, 0.85) = ∇σ(q)</text>
+<line x1="120.0" y1="390.0" x2="120.0" y2="264.0" stroke="#1f2933" stroke-width="2.6" marker-end="url(#ar)"/>
+<text x="128.0" y="300.0" font-size="14" font-weight="700" fill="#1f2933">q</text>
+<text x="324.0" y="300.0" font-size="14" font-weight="700" fill="#2f6f4f">簇 A（紧凑）</text>
+<text x="285.0" y="516.0" font-size="14" font-weight="700" fill="#b5452b">簇 B（长条形）</text>
+<rect x="560" y="96" width="370" height="150" rx="12" fill="#ffffff" stroke="#1f6feb" stroke-width="1.6"/><path d="M572,96 V246 A12,12 0 0 1 560,234 V108 A12,12 0 0 1 572,96 Z" fill="#1f6feb"/>
+<text x="586" y="126" font-size="16" font-weight="700" fill="#1f6feb">质心路由在比什么</text>
+<text x="586" y="154" font-size="13" fill="#1f2933" font-family="ui-monospace,SFMono-Regular,Menlo,'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',monospace">⟨q, c_j⟩ = 簇内 ⟨q, y⟩ 的平均值</text>
+<text x="586" y="178" font-size="13" fill="#1f2933">平均值一定 ≤ 最大值，是个下界</text>
+<text x="586" y="200" font-size="13" fill="#1f2933">下界和真值之间差多少，取决于簇在</text>
+<text x="586" y="222" font-size="13" fill="#1f2933">q 方向上「伸得多远」，每个簇都不同</text>
+<rect x="560" y="266" width="370" height="150" rx="12" fill="#ffffff" stroke="#b5452b" stroke-width="1.6"/><path d="M572,266 V416 A12,12 0 0 1 560,404 V278 A12,12 0 0 1 572,266 Z" fill="#b5452b"/>
+<text x="586" y="296" font-size="16" font-weight="700" fill="#b5452b">支撑函数在比什么</text>
+<text x="586" y="324" font-size="13" fill="#1f2933" font-family="ui-monospace,SFMono-Regular,Menlo,'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',monospace">σ_Yj(q) = max ⟨q, y⟩, y ∈ Y_j</text>
+<text x="586" y="348" font-size="13" fill="#1f2933">几何上：垂直于 q 推一条线，直到</text>
+<text x="586" y="370" font-size="13" fill="#1f2933">刚好碰到凸包，碰到的那个顶点就是</text>
+<text x="586" y="392" font-size="13" fill="#1f2933">y⋆，也正是 σ 在 q 处的梯度</text>
+<rect x="560" y="436" width="370" height="110" rx="12" fill="#ffffff" stroke="#5b6770" stroke-width="1.6"/><path d="M572,436 V546 A12,12 0 0 1 560,534 V448 A12,12 0 0 1 572,436 Z" fill="#5b6770"/>
+<text x="586" y="466" font-size="16" font-weight="700" fill="#1f2933">这个例子里</text>
+<text x="586" y="494" font-size="13" fill="#1f2933" font-family="ui-monospace,SFMono-Regular,Menlo,'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',monospace">质心：A 0.50 &gt; B −0.05 → 选 A</text>
+<text x="586" y="518" font-size="13" fill="#1f2933" font-family="ui-monospace,SFMono-Regular,Menlo,'Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei','Noto Sans',monospace">真值：B 0.85 &gt; A 0.54 → 该选 B</text>
+</g></svg>

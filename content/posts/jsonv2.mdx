@@ -1,0 +1,268 @@
+---
+title: "把 encoding/json 拆成两层再装回去：Go json/v2 的分层与兼容"
+description: "Go 1.27 让旧的 encoding/json 跑在 v2 之上：语法层 jsontext 和语义层 v2 分开，每处行为差异都是一个选项，新旧代码在同一个依赖图里共存，不需要 flag day。"
+date: "2026-11-11"
+author: "Lios09"
+tags:
+  - go
+  - json
+  - encoding
+  - compatibility
+  - security
+  - api-design
+category: "Development"
+---
+
+## 1. 这次的主角其实是 v1
+
+Go 团队 2026-11-10 发的周年文章 [Go Turns 17](https://go.dev/blog/17years) 里，有一段专门讲 JSON。说 `encoding/json/v2` 和 `encoding/json/jsontext` 前后做了六年，在 Go 1.27 进入 GA；也说旧包的一些默认行为，比如「silently accepting invalid UTF-8 or duplicate object keys and matching struct fields case-insensitively」，在今天已经成了互操作和安全上的隐患。
+
+我读下来，最在意的不是 v2 多了哪些功能，而是后面这句：
+
+> the original `encoding/json` package is now implemented entirely in terms of `v2` under the hood.
+
+新包大家都会写。难的是一个被几百万个程序依赖、受 Go 1 兼容承诺约束的包，怎么在不破坏任何人的前提下换掉整个实现，同时还要允许新代码用上更严格的默认值。json/v2 给出的答案说起来不复杂：把「JSON 语法」和「JSON 与 Go 值之间的意义」拆成两层，再把 v1 和 v2 之间的每一处行为差异都做成一个可以单独开关的选项。v1 就是 v2 加上一整套「旧行为」选项。
+
+时间线我按原始材料捋了一遍：2020 年底 Daniel Martí 起草了 v2 的设想；Joe Tsai 在做 protobuf 的 Go API 时，因为 `protojson` 没法用 `encoding/json`（既做不到 protobuf 规范要求的更严格 JSON，也没法高效流式序列化）而一起加入；2023-10 在 GitHub 发起[讨论 #63397](https://github.com/golang/go/discussions/63397)；2025-01 提交正式[提案 #71497](https://github.com/golang/go/issues/71497)；Go 1.25 以 `GOEXPERIMENT=jsonv2` 实验形式上线；Go 1.27 转正，配套的介绍文 [A new Go API for JSON](https://go.dev/blog/jsonv2) 发在 2026-11-04。官方博客特意提到，这件事主要是 Google 之外的人在推动。
+
+## 2. 宽松的默认值，问题出在「两个解析器意见不一」
+
+JSON 本身的规范留了不少空白。RFC 8259 要求 UTF-8，但没规定对象里出现重复的名字该怎么办；名字比较按惯例是区分大小写的，但也只是「通常」。v1 在这些空白处选了最宽容的做法，单看一个程序其实挺省心：输入有点脏，照样能解出来。
+
+麻烦在于 JSON 很少只被一个程序读。`encoding/json/v2` 的包文档里 Security Considerations 一节举了个例子，我觉得把问题说得很透：一个服务负责鉴权，另一个服务负责执行，后者默认前者已经鉴过权了。如果攻击者能造出一段 JSON，让两边对「这是谁的请求」得出不同答案，就能拿 A 用户的合法凭据，以 B 用户的身份做事。漏洞不在哪一个解析器写错了，而在两个都「合法」的解析器给出了不同的解释。
+
+这不是纸上谈兵。jsonv2 的介绍文点名了 [CVE-2017-12635](https://nvd.nist.gov/vuln/detail/CVE-2017-12635)：Apache CouchDB 里 Erlang 写的 JSON 解析器和 JavaScript 写的解析器对重复键的处理不一样。`_users` 文档里写两个 `roles`，做写入授权时用的是第二个，后续给新用户授权时用的却是第一个。普通用户就这样给自己加上了 `_admin`。
+
+我在 Go 1.27.3 上写了个小程序，把 v1 和 v2 的默认行为摆在一起看。第三种调用是「整体按 v1，只把重复键改成拒绝」，后面讲选项时会用到：
+
+```go
+package main
+
+import (
+	jsonv1 "encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"fmt"
+	"strings"
+)
+
+type Req struct {
+	User  string `json:"user"`
+	Admin bool   `json:"admin"`
+}
+
+func run(label string, in string, unmarshal func([]byte, any) error) {
+	var r Req
+	if err := unmarshal([]byte(in), &r); err != nil {
+		fmt.Printf("%s  err: %v\n", label, err)
+		return
+	}
+	fmt.Printf("%s  ok:  %+v\n", label, r)
+}
+
+func main() {
+	v1 := jsonv1.Unmarshal
+	v2 := func(b []byte, v any) error { return json.Unmarshal(b, v) }
+	mixed := func(b []byte, v any) error { // v1 语义，只把重复键改成 v2 的拒绝
+		return json.Unmarshal(b, v, jsonv1.DefaultOptionsV1(), jsontext.AllowDuplicateNames(false))
+	}
+
+	dup := `{"user":"alice","user":"root"}`
+	run("dup   v1   ", dup, v1)
+	run("dup   v2   ", dup, v2)
+	run("dup   mixed", dup, mixed)
+
+	caseIn := `{"user":"alice","ADMIN":true}`
+	run("case  v1   ", caseIn, v1)
+	run("case  v2   ", caseIn, v2)
+
+	bad := "{\"user\":\"al\xffice\"}"
+	run("utf8  v1   ", bad, v1)
+	run("utf8  v2   ", bad, v2)
+
+	junk := `{"user":"alice"} garbage`
+	var r Req
+	fmt.Println("junk  v1 Decoder.Decode:", jsonv1.NewDecoder(strings.NewReader(junk)).Decode(&r))
+	fmt.Println("junk  v2 UnmarshalRead: ", json.UnmarshalRead(strings.NewReader(junk), &r))
+}
+```
+
+实际输出：
+
+```text
+dup   v1     ok:  {User:root Admin:false}
+dup   v2     err: jsontext: duplicate object member name "user"
+dup   mixed  err: duplicate object member name
+case  v1     ok:  {User:alice Admin:true}
+case  v2     ok:  {User:alice Admin:false}
+utf8  v1     ok:  {User:al�ice Admin:false}
+utf8  v2     err: jsontext: invalid UTF-8 within "/user" after offset 11
+junk  v1 Decoder.Decode: <nil>
+junk  v2 UnmarshalRead:  jsontext: invalid character 'g' after top-level value after offset 17
+```
+
+逐行看一下我关心的地方。
+
+**重复键。** v1 安静地取了后一个，`user` 变成了 `root`。要是前面有个网关用的是「取第一个」的解析器，它看到的就是 `alice`。v2 直接报错，把这类歧义挡在门外。
+
+**大小写。** `ADMIN` 在 v1 里命中了 tag 为 `admin` 的字段，v2 不认。这一条容易被低估：大小写不敏感的匹配本身就是制造「重复键」的另一条路。`{"admin":false,"ADMIN":true}` 在大部分语言的解析器眼里是两个不同的键，在 v1 眼里却是同一个字段被写了两次。包文档说得很直白，这会让 Go 对同一个对象的理解和大多数实现不一样。介绍文还补了一点：这种匹配也是 v1 的一个性能限制。
+
+**非法 UTF-8。** v1 把 `\xff` 替换成了 U+FFFD（就是输出里的 `�`），没有任何错误。包文档把这种替换直接称为「a form of data corruption」：字符串的精确含义被改了。比如签名校验和存储前后各解析一次，两边看到的字节就不再一致。
+
+**尾部垃圾。** 这是 API 形状带来的坑，不算默认值。很多人习惯写 `json.NewDecoder(r).Decode(v)`，但 Decoder 本来是给「一串连续 JSON 值」设计的，读完第一个值就收手，后面的 ` garbage` 它不管。v2 的 `UnmarshalRead` 语义是「这个 Reader 里正好有一个值」，多出来的就报错。
+
+还有一条没放进程序：**nil slice 和 nil map**。v1 把它们输出成 `null`，v2 输出成 `[]` 和 `{}`。介绍文的理由是，很多别的语言的 JSON 实现不允许把 `null` 解到「期望是数组或对象」的类型里，而且调查显示大多数 Go 用户更想要空数组。迁移指南里有个 `Pet{Name: "Remi"}` 的例子，`Nicknames` 从 `null` 变成 `[]`。这条和前面几条性质不同，它不算安全问题，是互操作上的取舍，后面迁移时它反而最容易咬人。
+
+v2 也没有把所有事情都收紧。未知字段两边默认都是忽略，想拒绝要显式传 `RejectUnknownMembers`；解到 `any` 里的大整数两边都会落成 `float64` 丢精度。包文档自己写了，v2「generally chooses more secure defaults than v1, but care should still be taken with large integers or unknown members」。我觉得这份坦白挺好，严格默认值管的是「语义歧义」，没打算替你做输入校验。
+
+## 3. 为什么要把语法和语义分成两个包
+
+v2 的介绍文把 JSON 序列化拆成两件事：
+
+- **语法**：按 JSON 文法处理文本，用 encode / decode 这两个词；
+- **语义**：决定 JSON 值和 Go 值怎么对应，用 marshal / unmarshal 这两个词。
+
+拆开以后，`jsontext` 只管语法，完全不碰反射；`encoding/json/v2` 建在它上面，负责「这个对象该落进哪个 struct 字段」这类判断。
+
+![Go 1.27 JSON 的三层：encoding/json 的 Marshal/Unmarshal 只是带 DefaultOptionsV1 调用 v2；v2 语义层用反射处理 struct tag、类型方法和调用方注入的 marshaler；jsontext 语法层不用反射，以 Token/Value 流式读写，并检查 UTF-8 和重复键；Options 是同一种类型，可以跨层传递](/posts/jsonv2/layers.svg)
+
+一开始我以为这只是代码组织上的洁癖，读完 v1 的问题清单才明白，它是好几个老问题的共同解法。
+
+**v1 的 Marshaler 接口把边界划错了。** `MarshalJSON() ([]byte, error)` 必须返回一整块新分配的字节，`encoding/json` 拿到之后还得再校验一遍是不是合法 JSON，再按缩进格式重排。`UnmarshalJSON([]byte)` 更麻烦：调用它之前，库得先把整个值完整扫一遍才知道它在哪里结束；方法拿到字节之后，自己再从头解析一遍。如果方法里又递归调用 `json.Unmarshal`，代价就变成平方级。介绍文举了 Kubernetes 的例子：某个服务在 `UnmarshalJSON` 里递归解析 OpenAPI 规范，性能被拖垮了（[kube-openapi#315](https://github.com/kubernetes/kube-openapi/issues/315)），改成 `UnmarshalJSONFrom` 之后据称「improved performance by orders of magnitude」。这个数我没有验证，只是转述。
+
+v2 新增的 `MarshalJSONTo(*jsontext.Encoder)` 和 `UnmarshalJSONFrom(*jsontext.Decoder)` 把这条边界挪了位置：类型直接往 Encoder 里写 token，或者从 Decoder 里读 token。值在哪里结束、写出来的东西合不合法，都交给 Encoder/Decoder 的状态机。前提是得有一个独立、可以单独拿出来用的语法层，jsontext 就是干这个的。
+
+**v1 的「流式」其实不流。** v1 的 `Encoder`/`Decoder` 虽然接的是 `io.Writer`/`io.Reader`，但会把整个 JSON 值缓冲在内存里；`Decoder.Token` 分配很重，而且根本没有对应的写 token 的 API。jsontext 的 Decoder 用一个状态机维护当前嵌套位置，可以一个 token 一个 token 地往前走：
+
+```go
+package main
+
+import (
+	"encoding/json/jsontext"
+	"fmt"
+	"strings"
+)
+
+func main() {
+	in := `{"items":[1,"two"],"ok":true}`
+	dec := jsontext.NewDecoder(strings.NewReader(in))
+	for {
+		tok, err := dec.ReadToken()
+		if err != nil {
+			fmt.Println("stop:", err)
+			return
+		}
+		fmt.Printf("%-6v %-5s at %q\n", tok.Kind(), tok.String(), dec.StackPointer())
+	}
+}
+```
+
+实际输出：
+
+```text
+{      {     at ""
+string items at "/items"
+[      [     at "/items"
+number 1     at "/items/0"
+string two   at "/items/1"
+]      ]     at "/items"
+string ok    at "/ok"
+true   true  at "/ok"
+}      }     at ""
+stop: EOF
+```
+
+注意冒号和逗号不是 token。jsontext 的文档解释说，它们的位置可以从文法推出来，所以没给它们单独的表示。`StackPointer()` 返回的是 RFC 6901 的 JSON Pointer，前面报错信息里的 `within "/user"` 就是这么来的。我很喜欢这个细节：错误能告诉你出在哪个字段，而不只是一个字节偏移。
+
+**严格性放在哪一层也有讲究。** 重复键和非法 UTF-8 的检查放在 jsontext 里，对应的开关也是 jsontext 的选项（`AllowDuplicateNames`、`AllowInvalidUTF8`）；大小写匹配、nil slice 怎么输出属于「意义」，开关在 v2 里（`MatchCaseInsensitiveNames`、`FormatNilSliceAsNull`）。好处是哪怕你不用反射，直接拿 jsontext 写一个转发 JSON 的代理，也能拿到和 `json.Unmarshal` 同一套语法检查。上一节说的「两个解析器意见不一」，就是靠这种「语法检查只有一份」的设计来减少的。
+
+**选项是同一种类型。** v1、v2、jsontext 三个包导出的 `Options` 背后其实是同一个类型（`go doc` 里都显示为 `jsonopts.Options` 的别名），所以三层的选项可以混在一次调用里传，后传的覆盖先传的。Encoder/Decoder 上还有 `Options()` 方法，自定义的 `MarshalJSONTo` 可以拿到调用方的选项。v1 有个老毛病：`Decoder.DisallowUnknownFields` 一进入自定义的 `UnmarshalJSON` 就失效了，因为选项没办法顺着调用栈往下传。v2 在接口层面把这个问题解决了。
+
+## 4. v1 = v2 + DefaultOptionsV1
+
+有了「每一处行为差异都是一个选项」这个前提，v1 的实现就简单得近乎无聊。我翻了 Go 1.27.3 自带的源码，`encoding/json` 的 `Unmarshal` 就这么一行：
+
+```go
+func Unmarshal(data []byte, v any) error {
+	return jsonv2.Unmarshal(data, v, DefaultOptionsV1())
+}
+```
+
+`encoding/json` 的包文档把 v1 和 v2 的差异一条条列出来，每一条都对应一个选项：大小写匹配对应 `MatchCaseInsensitiveNames` 和 `MatchCaseSensitiveDelimiter`；`omitempty` 的旧定义对应 `OmitEmptyWithLegacySemantics`；指针接收者上的 `MarshalJSON` 只在值可寻址时才调用，对应 `CallMethodsWithLegacySemantics`；map 按确定顺序输出对应 `Deterministic`；HTML 字符转义对应 `jsontext.EscapeForHTML`；`time.Duration` 按纳秒数字输出对应 `FormatDurationAsNano`；结构上有错的类型（比如 tag 写坏了）v1 不报错，对应 `ReportErrorsWithLegacySemantics`。`DefaultOptionsV1()` 就是把这些开关全部拨到旧位置。
+
+再回头看第一段程序里的 `dup mixed` 那行：它报了错，但错误信息没有 `jsontext:` 前缀，和纯 v2 那行不一样。我另外打印了一下这个错误的类型，是 v1 的 `*json.SyntaxError`；源码里有个 `transformSyntacticError`，负责把 jsontext 的语法错误改写成 v1 的错误类型和措辞。所以 `DefaultOptionsV1` 兼容的不只是解析结果，连调用方会拿到什么错误类型也照顾到了。官方实验期的博客也提醒过，重新实现之后，「the exact wording of error messages」之类的地方仍可能有可观察到的差异。
+
+我觉得这个设计最聪明的地方在于，它把「兼容」从一个包级别的二选一，变成了一个可以按调用点、按选项组合出来的连续区间。包文档列了从纯 v1 到纯 v2 中间的几个点：
+
+```go
+jsonv1.Marshal(v)                                    // 纯 v1
+jsonv2.Marshal(v, jsonv1.DefaultOptionsV1())          // 语义上等于纯 v1
+jsonv2.Marshal(v, jsonv1.DefaultOptionsV1(),
+	jsontext.AllowDuplicateNames(false))              // 基本是 v1，只拿一条 v2 行为
+jsonv2.Marshal(v, jsonv1.CallMethodsWithLegacySemantics(true)) // 基本是 v2，只留一条 v1 行为
+jsonv2.Marshal(v)                                     // 纯 v2
+```
+
+源码里还有个小发现。`encoding/json` 目录下，旧实现（`decode.go` 等）和新实现（`v2_decode.go` 等）仍然并存，靠 `goexperiment.jsonv2` 这个构建标签区分；在 1.27.3 的 `internal/buildcfg` 里这个实验默认是开的，`go list` 显示 `encoding/json` 实际编译的是 `v2_*.go` 那一组文件。旧代码暂时还留在仓库里。至于它是不是一个官方承诺的回退开关，我没找到文档说明，就不下结论了。
+
+## 5. 没有 flag day 的关键：依赖图里两种版本可以混着用
+
+只让单个程序能慢慢迁还不够。真正难的是依赖图：你的服务用 v2，你依赖的某个库还在 v1，那个库依赖的另一个库已经写了 v2 的方法。如果 v1 和 v2 是两套互不相认的实现，整个生态就只能约一天一起切换，这就是 flag day。
+
+GA 版的介绍文专门写了两种情况：
+
+- 你用 v2 序列化一个 struct，里面某个字段的类型来自别的包，它只实现了 v1 的 `MarshalJSON`。没问题，v2 本来就支持 `MarshalJSON`。
+- 反过来，你还在用 v1，那个类型已经实现了 v2 的 `MarshalJSONTo`。也没问题，因为 v1 底下就是 v2，会走 `MarshalJSONTo`。
+
+还有一个顺带的好处：v2 新增的、向后兼容的东西，比如 `MarshalJSONTo` 方法、`embed` 这样的新 struct tag，v1 的调用方不用改代码也能用上。实验期的博客把这叫「feature inheritance」，另外两个好处是 gradual migration 和 reduced maintenance：修一个 bug，两个版本一起受益，不用再做一次回移。
+
+![迁移分四步：保持 encoding/json；换成 v2 API 但传 DefaultOptionsV1；在其后逐个追加 v2 行为；最后只保留确实依赖的少数 v1 选项。生产服务可以用 jsonsplit 同时跑两套并上报差异。底部说明依赖之间的互通](/posts/jsonv2/migration.svg)
+
+[迁移指南](https://go.dev/doc/jsonv2-migration)开头就说「you don't have to!」，v1 永远不会消失。它给了三种路线，按风险承受度来选：
+
+1. **All-at-once**：直接改 import，跑测试，提交。适合简单或者出问题代价很小的程序。
+2. **Option-by-option**：所有调用先改成 `json.Marshal(v, jsonv1.DefaultOptionsV1())`。指南说这一步「trivial and safe」，因为 v1 自己就是这么实现的。然后在后面一个个追加 v2 行为。出问题时，这些选项也正好可以用来二分定位到底是哪条行为变化惹的祸。
+3. **jsonsplit**：给生产服务用。[github.com/go-json-experiment/jsonsplit](https://github.com/go-json-experiment/jsonsplit) 包了一层 `Marshal`/`Unmarshal`，可以设成 `CallBothButReturnV1`：两套都跑，返回 v1 的结果，有差异就上报；开了 `AutoDetectOptions` 还能自动找出是哪个选项造成的差异。指南也写明了代价：两套都跑大约让 marshal 的开销翻倍，自动探测还要再多跑几次，所以可以用 `SetMarshalCallRatio` 只抽一部分调用来比对。
+
+指南里有句话我觉得特别实在：API 迁移是 trivial 的，`json.Marshal(v)` 改个 import 就能编译过；难的是行为变化。`Nicknames` 从 `null` 变成 `[]` 编译器不会提醒你，测试未必覆盖得到，下游的消费方却可能直接挂掉。
+
+## 6. 我会怎么权衡这些代价
+
+这套设计不是没有成本，有几处我会特别留意。
+
+**选项空间很大，「当前到底是什么行为」变得更难一眼看出来。** 以前 `encoding/json` 就一种行为；现在同一个 `json.Marshal` 调用，因为前面传了什么选项、struct tag 里写了 `case:ignore` 还是 `case:strict`（字段级选项优先于调用方选项），结果可能不同。我会把项目里用到的选项组合收进一个包级变量，所有调用点共用，别让每个调用点各自拼一套。
+
+**有些「改对了」的地方，对存量系统就是破坏。** nil slice 变 `[]`、map 不再按确定顺序输出（v2 要 `Deterministic` 才保证）、`time.Duration` 没有默认表示直接报错、`omitempty` 改成按 JSON 的空值判断。对新代码这些都是更好的默认值；可如果有缓存键是拿序列化结果算的，或者有快照测试直接比较 JSON 字节，map 顺序这一条就会让它们开始不稳定。我会把这几条放在迁移清单的最前面。
+
+**严格默认值只在两边都严格时才真正有用。** 第二节说的鉴权/执行分离的场景，如果网关是别的语言写的、允许重复键，Go 这边拒绝了也只是让请求失败，没法让两边达成一致。不过这已经是正确的方向：失败总比悄悄给出不同解释要好。
+
+**性能我只引用官方说法。** 介绍文说 v2 的 Marshal「roughly at parity with v1」，有时快一点有时慢一点；Unmarshal「significantly faster」，「with benchmarks demonstrating improvements of up to 10x」。周年文章说 v1 的调用方升级就能拿到更快的 unmarshal。我没跑基准，这些数字我原样转述，不作背书。对我来说更重要的是结构性的那一条：只要自定义类型还在用 `UnmarshalJSON([]byte)`，双重解析的成本就省不掉，想要真正的收益得迁到 `UnmarshalJSONFrom`。
+
+（同一篇周年文章还介绍了 `goroutineleak` profiler，复用 GC 的可达性分析来找出那些永远不会被唤醒的 goroutine。它和 JSON 无关，这里就不展开了。）
+
+## 7. 我的看法
+
+1. **分层不是为了好看，而是给严格性找了一个唯一的落点。** 重复键和 UTF-8 这类语法问题只在 jsontext 里检查一次，反射层、v1 兼容层、手写的流式代码都走同一个状态机。我觉得这是最值得借鉴的地方：想减少「两个解析器意见不一」，最好的办法是在自己的代码库里先做到只有一个解析器。
+
+2. **「把每一处行为差异都做成选项」是这次兼容方案的核心技术。** 它把 v1 和 v2 之间原本的二选一，变成了一个可以按调用点逐步移动的区间，v1 本身就是区间的一端。我以后要设计需要大版本升级的库，会优先问自己：新旧行为的每一处差异，能不能都表达成一个开关？如果能，旧版本就可以变成新版本的一个预设配置，而不用维护两套实现。
+
+3. **互通比迁移工具更重要。** jsonsplit 很好用，但真正去掉 flag day 的是「v2 认 v1 的方法、v1 底下也走 v2 的方法」这两条。只要依赖图里不存在两套互不认识的实现，每个包就可以按自己的节奏升级。
+
+4. **我会怎么用：** 新代码直接用 v2，默认值不改，需要时显式加上 `RejectUnknownMembers`。老服务先把调用点换成 `DefaultOptionsV1()`，再按风险从低到高逐条打开 v2 行为：重复键和非法 UTF-8 最先开，因为它们本来就是坏数据；nil slice 和 map 顺序最后开，因为它们最可能影响下游。对外暴露 JSON 的服务，上线前我会用 jsonsplit 抽样比对一段时间。
+
+5. **最让我服气的是克制。** 六年里先做实验包、再进 GOEXPERIMENT、最后转正，v1 一直没被宣布废弃，迁移指南讲「为什么要迁移」时，开口第一句就是「你不必迁移」。对一个按实验期博客的说法被 import 次数排第五的 Go 包来说，我觉得这种不催用户的态度，本身就是兼容承诺的一部分。
+
+## 参考
+
+- [Go Turns 17（Austin Clements，2026-11-10）](https://go.dev/blog/17years)
+- [A new Go API for JSON（Michael Pratt、Joe Tsai、Daniel Martí 等，2026-11-04）](https://go.dev/blog/jsonv2)
+- [A new experimental Go API for JSON（Joe Tsai、Daniel Martí 等，2025-09-09）](https://go.dev/blog/jsonv2-exp)
+- [encoding/json/v2 Migration Guide](https://go.dev/doc/jsonv2-migration)
+- [encoding/json/v2 包文档（含 Security Considerations）](https://pkg.go.dev/encoding/json/v2)
+- [encoding/json/jsontext 包文档](https://pkg.go.dev/encoding/json/jsontext)
+- [encoding/json 包文档（v1 与 v2 行为差异列表）](https://pkg.go.dev/encoding/json)
+- [golang/go#71497：encoding/json/v2: new API for encoding/json](https://github.com/golang/go/issues/71497)
+- [golang/go discussion #63397：encoding/json/v2](https://github.com/golang/go/discussions/63397)
+- [go-json-experiment/jsonsplit](https://github.com/go-json-experiment/jsonsplit)
+- [CVE-2017-12635（NVD）](https://nvd.nist.gov/vuln/detail/CVE-2017-12635)
+- [kubernetes/kube-openapi#315](https://github.com/kubernetes/kube-openapi/issues/315)

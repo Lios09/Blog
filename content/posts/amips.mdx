@@ -1,0 +1,242 @@
+---
+title: "簇里最好的 key 能有多好：Apple 用支撑函数给向量检索做摊销"
+description: "IVF 用质心选簇，比的其实是簇内内积的平均值。Apple 这篇 ICML 2026 论文把「簇里最好的 key 能有多好」写成支撑函数，用 SupportNet 换路由、用 KeyNet 改写查询，把搜索成本挪到离线训练里先付掉。"
+date: "2026-11-11"
+author: "Lios09"
+tags:
+  - retrieval
+  - vector-search
+  - mips
+  - convex-optimization
+  - icnn
+  - rag
+category: "Development"
+published: true
+featured: false
+---
+
+## 1. 这篇论文想省的是哪一步
+
+最大内积搜索（MIPS）的定义很短：给定查询向量 $x$ 和一个 key 集合 $Y = \{y_1, \dots, y_n\}$，找出和 $x$ 内积最大的那个 key。
+
+$$
+y^\star(x) = \arg\max_{y \in Y} \langle x, y \rangle
+$$
+
+RAG 里检索那一步就是它：问题编码成 $x$，文档段落编码成 $y$，内积最大的段落拼进 prompt。暴力算是 $O(nd)$，几百万段落、几百维的时候就扛不住每个请求都扫一遍，于是有了各种近似索引。其中最常见的是倒排文件索引 IVF：先用 k-means 把 key 分成 $k$ 个簇，查询来了先和 $k$ 个质心比，挑出最有希望的几个簇，再在簇里精确扫描。
+
+Apple 机器学习研究博客 11 月 5 日发了一篇 [Faster Retrieval for Better, More Efficient RAG](https://machinelearning.apple.com/research/faster-retrieval)，介绍的是他们 ICML 2026 的论文 [Amortizing Maximum Inner Product Search with Learned Support Functions](https://arxiv.org/abs/2603.08001)（作者 Theo X. Olausson、João Monteiro、Michal Klein、Marco Cuturi，第一作者现在在 MIT，这项工作是在 Apple 实习期间做的），代码在 [apple/ml-amips](https://github.com/apple/ml-amips)。
+
+我读完觉得，这篇论文里真正新的东西不是「用神经网络加速检索」，这个方向早就有人做了。新的是它先给 MIPS 找了一个凸分析里的名字，再让网络结构和训练目标都顺着这个名字的性质来设计。另外它挑明了一个前提，很多索引方法没有正面利用：生产环境里的查询分布通常是稳定的、能采到样本的，而且和 key 的分布很不一样。官方博客的原话是，RAG 的查询来自「short user-generated questions」，key 却是「long, informative, and curated pieces of text」。
+
+所谓摊销（amortized），就是把很多次查询都要重复付出的搜索成本，挪到一次性的离线训练里先付掉。论文把这件事做在两个位置：一个是 IVF 选簇那一步，一个是查询向量本身。
+
+## 2. 质心路由为什么会选错簇
+
+先看 IVF 的选簇规则到底在比什么。簇 $Y_j$ 的质心是 $c_j = \frac{1}{|Y_j|}\sum_{y \in Y_j} y$，内积是线性的，所以
+
+$$
+\langle x, c_j \rangle = \frac{1}{|Y_j|}\sum_{y \in Y_j} \langle x, y \rangle \le \max_{y \in Y_j} \langle x, y \rangle
+$$
+
+也就是说，质心分数是簇内所有内积的**平均值**。平均值一定不超过最大值，它是个下界，而不是上界。我们真正想知道的是「这个簇里最好的那个 key 有多好」，拿每个簇的平均水平去排序，只有在每个簇的「平均值和最大值之间的差距」都差不多的时候才靠得住。可这个差距取决于簇在查询方向上伸展得有多远：紧凑的簇差距很小，长条形的簇如果有一头恰好伸向查询方向，差距就会很大。
+
+我用二维玩具数据把这件事写了出来。两个簇，A 很紧凑，B 是长条形，大部分点在右下，只有一个点伸到上方；查询指向正上方。
+
+```python
+import numpy as np
+
+# 两个簇：A 很紧凑；B 是长条形，大部分点在右下，只有一个点伸到了上方
+A = np.array([[0.68, 0.48], [0.72, 0.52], [0.70, 0.46], [0.66, 0.54]])
+B = np.array([[1.00, -0.40], [0.90, -0.30], [0.95, -0.35], [0.20, 0.85]])
+q = np.array([0.0, 1.0])  # 查询方向：正上方
+
+def support(Y, x):
+    """σ_Y(x) = max_y <x, y>"""
+    return (Y @ x).max()
+
+for name, Y in [("A", A), ("B", B)]:
+    c = Y.mean(axis=0)
+    print(f"{name}: centroid={c.round(4)}  <q,c>={q @ c:+.4f}  "
+          f"σ(q)={support(Y, q):+.4f}  gap={support(Y, q) - q @ c:.4f}")
+
+# 质心路由选 <q,c> 最大的簇；精确路由选 σ(q) 最大的簇
+print("centroid routing ->", "AB"[np.argmax([q @ A.mean(0), q @ B.mean(0)])])
+print("exact routing    ->", "AB"[np.argmax([support(A, q), support(B, q)])])
+
+# σ 的梯度就是最佳 key：用中心差分验证
+allY, eps = np.vstack([A, B]), 1e-6
+grad = np.array([(support(allY, q + eps * e) - support(allY, q - eps * e)) / (2 * eps)
+                 for e in np.eye(2)])
+print("numeric grad of σ at q:", grad.round(4), " argmax key:", allY[np.argmax(allY @ q)])
+```
+
+在 numpy 2.5.4 上的实际输出：
+
+```text
+A: centroid=[0.69 0.5 ]  <q,c>=+0.5000  σ(q)=+0.5400  gap=0.0400
+B: centroid=[ 0.7625 -0.05  ]  <q,c>=-0.0500  σ(q)=+0.8500  gap=0.9000
+centroid routing -> A
+exact routing    -> B
+numeric grad of σ at q: [0.2  0.85]  argmax key: [0.2  0.85]
+```
+
+A 的差距只有 0.04，B 的差距是 0.90。按质心排，A 以 0.50 对 −0.05 大比分胜出；按簇内最大值排，B 的 0.85 才是答案。如果只探查一个簇，这个查询的最佳 key 就丢了。最后一行先剧透一下第 3 节：对整个 key 集合的「最大内积」做数值求导，得到的梯度正好就是最佳 key 本身。
+
+![二维玩具数据：紧凑簇 A 和长条形簇 B，查询 q 指向正上方。A 的质心分数 0.50、簇内最大 0.54；B 的质心分数 −0.05、簇内最大 0.85。质心路由选 A，真正的最佳 key 在 B。水平虚线是每个簇在 q 方向上的支撑线](/posts/amips/support-geometry.svg)
+
+二维的例子当然是我特意摆出来的。真实的 embedding 有几百维，k-means 的簇也不会这么夸张，但道理一样：高维空间里簇的形状各不相同，「平均值和最大值之间的差距」随查询方向和簇变化，质心分数就是一个有偏、而且偏差不均匀的估计。官方博客的说法是，centroid alone 「cannot account for the spread of its cluster」。
+
+实际系统里大家早就在用最朴素的补救办法：多探几个簇，也就是把 nprobe 调大。代价是扫描的 key 成比例增加。论文要做的，是在不多扫的前提下把簇选对。
+
+## 3. 支撑函数：把「簇里最好能有多好」写成一个函数
+
+把最大内积看成查询 $x$ 的函数：
+
+$$
+\sigma_Y(x) = \max_{y \in Y} \langle x, y \rangle
+$$
+
+在凸分析里，这就是集合 $Y$ 的**支撑函数**（support function）。几何上可以这样想：沿着 $x$ 的方向，拿一条和 $x$ 垂直的直线（高维里是超平面）往前推，推到刚好碰到 $Y$ 的凸包为止，碰到的位置对应的值就是 $\sigma_Y(x)$，碰到的那个顶点就是 $y^\star(x)$。上图里两条水平虚线，就是两个簇沿 $q$ 方向的支撑线。也正因为只有凸包的顶点能被碰到，凸包内部的 key 永远不会成为任何查询的最佳匹配。
+
+论文用到了它的三个性质，我按我理解的重要程度排一下。
+
+**第一，梯度就是最佳 key。** 在 $\arg\max$ 唯一的地方，
+
+$$
+\nabla \sigma_Y(x) = y^\star(x)
+$$
+
+这是包络定理的直接结论：$\sigma_Y$ 在 $x$ 附近就等于线性函数 $\langle x, y^\star \rangle$，线性函数的梯度就是 $y^\star$。上面 numpy 的中心差分验证的就是这一点。$\arg\max$ 不唯一的地方（两个 key 并列最好）函数不可导，次梯度是这些并列 key 的凸组合。整个函数是分片线性的，每一片对应一个 key 「赢」的区域，论文 Figure 2 画的就是这个：左边是等高线，右边是每个查询被映射到哪个 key。
+
+**第二，它是凸的。** 它是 $n$ 个线性函数逐点取最大，逐点最大保持凸性。这一点决定了可以用一类「天生凸」的网络去拟合它。
+
+**第三，它是正一次齐次的。** 对 $\alpha > 0$ 有 $\sigma_Y(\alpha x) = \alpha\,\sigma_Y(x)$，把查询放大两倍，最大内积也放大两倍，最佳 key 不变。齐次函数满足欧拉定理：
+
+$$
+\langle \nabla \sigma_Y(x),\ x \rangle = \sigma_Y(x)
+$$
+
+代入第一条，左边就是 $\langle y^\star, x \rangle$，等式显然成立。这个恒等式后面会变成 KeyNet 的一项损失。
+
+把这三点放在一起，我觉得最妙的是：「分数」和「最佳 key」不再是两件需要分别学习的事，它们是同一个函数的值和梯度。如果能把 $\sigma_Y$ 学得足够准，路由用它的值，找 key 用它的梯度。
+
+论文还顺手提了一个和最优传输的联系：映射 $x \mapsto y^\star(x)$ 是一个凸函数的梯度，按 Brenier 定理的说法就是一张 Brenier 映射。通常学最优传输映射时，那个凸势函数是未知的，得从样本里间接推；而在 MIPS 里，对任何查询都能穷举出势函数的值 $\sigma_Y(x)$ 和梯度 $y^\star(x)$，于是作者说这可以看成一个「有监督的最优传输学习问题」。这个视角对工程实现没有直接影响，但它解释了为什么作者团队（Cuturi 是做最优传输的）会从这个角度切进来。
+
+## 4. SupportNet：为什么用输入凸网络
+
+既然目标函数是凸的，那就挑一个只能表示凸函数的网络去拟合。输入凸神经网络（ICNN，Amos 等人 2017 年提出）就是这样的结构：
+
+$$
+\begin{aligned}
+z_1 &= \sigma\!\left(W_0^{(x)} x + b_0\right) \\
+z_{i+1} &= \sigma\!\left(W_i^{(z)} z_i + W_i^{(x)} x + b_i\right) \\
+f_\theta(x) &= W_L z_L + b_L \in \mathbb{R}^c
+\end{aligned}
+$$
+
+其中隐层到隐层的权重 $W_i^{(z)}$ 要求逐元素非负，激活函数 $\sigma$ 是凸的、单调不减的。凸函数经过非负加权求和、再套一个凸且单调不减的函数，结果仍然是凸的，所以整个网络对输入 $x$ 是凸的。每层直接接入 $x$ 的那条旁路 $W_i^{(x)} x$ 不受约束，用来补表达能力。
+
+我理解用 ICNN 的好处有两层。一层是归纳偏置：假设空间里只剩凸函数，网络不用浪费容量去学「这个东西是凸的」，而且凸函数的梯度是单调映射，梯度拿出来当 key 用，结构上就和真正的 $\nabla\sigma_Y$ 是同一类东西。另一层是外推行为：训练分布之外的查询，一个凸网络至少不会给出凹进去的怪形状。
+
+但论文没有教条地硬约束。非负约束是「loosely」满足的：不做截断，而是加一个惩罚项 $\sum_i \lVert \mathrm{ReLU}(-W_i^{(z)}) \rVert^2$，再配合 Hoedt 和 Klambauer 的初始化方法让这些权重一开始就是非负的。所以严格说，训练出来的 SupportNet 只是「近似凸」。我觉得这是务实的选择，硬截断在几亿参数的规模上很可能难训，但读结论时要记得这一点。
+
+另外两个细节都在照顾第 3 节的性质：
+
+- **齐次化包装。** 对任意基础网络 $g$，定义 $H[g](x) = \lVert x \rVert \cdot g\!\left(x / \lVert x \rVert\right)$，这样就从构造上保证了正一次齐次。论文说这比「去掉所有 bias、只用 ReLU」更灵活，实验里 SupportNet 总是套着这层。
+- **激活函数。** 真值是分片线性的，理论上该用 ReLU 这类折线；论文用的是平滑的 leaky ReLU，$\sigma_{\alpha,\beta}(x) = \alpha x + (1-\alpha)\frac{1}{\beta}\log(1 + e^{\beta x})$，取 $\alpha = 0.1$、$\beta = 20$，在「足够像折线」和「梯度好传」之间折中。
+
+用作路由时，网络有 $c$ 个输出，第 $j$ 个输出 $f_\theta(x)_j$ 去拟合第 $j$ 个簇的支撑函数 $\sigma_{Y_j}(x)$。所有簇共享主干参数，相当于把 $c$ 个回归任务放进一个多任务网络。训练目标是两项加权和：
+
+$$
+\begin{aligned}
+\mathcal{L}_{\text{score}} &= \mathbb{E}_{x \sim p_X}\Big[\tfrac{1}{c}\textstyle\sum_j \big(f_\theta(x)_j - \sigma_{Y_j}(x)\big)^2\Big] \\
+\mathcal{L}_{\text{grad}} &= \mathbb{E}_{x \sim p_X}\Big[\tfrac{1}{c}\textstyle\sum_j \big\lVert \nabla_x f_\theta(x)_j - y_j^\star(x) \big\rVert^2\Big]
+\end{aligned}
+$$
+
+注意期望是对 $p_X$（真实的查询分布）取的，不是对整个空间。这就是摊销的关键：网络只需要在「会被问到的地方」把支撑函数拟合准。论文默认的权重是 $\lambda_{\text{score}} = 0.01$、$\lambda_{\text{grad}} = 1.0$，也就是更看重梯度（key）的重建；附录 A.6 的消融显示，加一点点分数项就能明显降低分数误差，而梯度误差几乎不变。
+
+查询来了，一次前向就得到 $c$ 个分数，按分数挑前 $s$ 个簇，簇里照常精确扫描。它回答的问题从「这个簇的平均水平如何」变成了「这个簇里最好的 key 能有多好」。
+
+为什么路由用 SupportNet，而不是下面要讲的 KeyNet？论文给的理由很具体。KeyNet 要为每个簇输出一个 $d$ 维向量，输出层是 $h \times cd$；簇数到 128 时，作者说 KeyNet 的输出维度「too large to handle」。SupportNet 每个簇只出一个标量，输出层是 $h \times c$。反过来，如果要用 SupportNet 拿 key，就得做一次反向传播求梯度，论文说反向通常要花前向的一到两倍，所以单集合（$c = 1$）找 key 时他们改用 KeyNet。
+
+## 5. KeyNet：不改索引，改查询
+
+KeyNet 换了一个思路：不去学支撑函数，直接回归最佳 key，$F_\theta(x) \approx y^\star(x)$。结构和 ICNN 一样是那种带输入旁路的 MLP，但不加任何非负约束。它不再保证输出是某个凸函数的梯度，于是论文用欧拉定理补了一项一致性损失：
+
+$$
+\begin{aligned}
+\mathcal{L}_{\text{key}} &= \mathbb{E}\Big[\big\lVert F_\theta(x) - y^\star(x) \big\rVert^2\Big] \\
+\mathcal{L}_{\text{consist}} &= \mathbb{E}\Big[\big(\langle F_\theta(x), x\rangle - \sigma_Y(x)\big)^2\Big]
+\end{aligned}
+$$
+
+第二项的意思是：如果 $F_\theta$ 真的是某个一次齐次函数的梯度，那它和 $x$ 的内积就应该等于那个函数值。没有显式的势函数，就用这条恒等式把输出往「像一个支撑函数的梯度」那边拉。默认权重是 $\lambda_{\text{key}} = 1.0$、$\lambda_{\text{consist}} = 0.01$。
+
+KeyNet 的用法是我觉得整篇论文里最实用的部分：把预测出来的 $\hat y = F_\theta(x)$ 当作新查询，原封不动地交给现成的 FAISS IVF 索引。索引不用重建，代码不用改，只是在它前面多了一次前向。
+
+为什么这能行？我是这样理解的。IVF 建索引时，每个 key 按粗量化器的规则被分给一个质心；查询时用的是同一套规则。所以如果查询恰好就是某个 key，选出来的第一个格子正好就是它自己的格子，路由不会出错。麻烦在于查询不是 key：短问题和长段落的 embedding 分布明显错开。论文附录 A.10 专门做了检查，NQ 和 HotpotQA 上查询的分布相对 key 明显偏移，有几个查询密集的区域，key 那边没有同样密集的对应区域；Quora 是「找重复问题」，查询和 key 都是短问题，两个分布就贴得很近。KeyNet 做的事情，就是把查询先搬到 key 的那片区域里，搬到它最可能命中的 key 附近，再让 IVF 去找。论文的原话是，$\hat y$「by construction, closer to the true top key than x is」。
+
+这也解释了论文里一个很一致的规律：分布偏移越大，KeyNet 帮得越多。NQ、HotpotQA 上收益最大，Quora 上最早饱和。附录 A.10 还统计了 top-1 内积的分布：Quora 的均值 0.86、中位数 0.88，NQ 和 HotpotQA 的均值是 0.71 和 0.74。最佳匹配本来就很近的数据集，搬动查询的空间也就小。
+
+![三条查询路径：普通 IVF 用质心打分选簇；SupportNet 一次前向输出每个簇的支撑函数估计，按估计值选簇；KeyNet 把 q 改写成预测的最佳 key，再交给原样的 IVF。下方是离线阶段：采样查询加噪声、穷举求每个簇内的最佳 key、回归训练](/posts/amips/query-path.svg)
+
+有一个细节容易被忽略，我在图里用虚线单独标了出来。论文衡量 KeyNet 用的是 Recall@k，$k$ 取库大小的 0.01% 到 0.5%，看的是真正的最佳 key 有没有出现在 $\hat y$ 的前 $k$ 个近邻里。也就是说它产出的是一批候选。真要上线，我会再用原始查询 $x$ 对这批候选精确打一次分。这一步是我加的，论文没有写，但我觉得不加的话，最后的排序依据就变成了「离预测点有多近」，而不是「和问题有多相关」。
+
+至于数字，我只转述来源里的说法。官方博客在 NQ（约 260 万段落）上给出：KeyNet 最大的模型达到 99% 召回所需的时间约为原始查询的八分之一（0.23 ms 对 1.8 ms），而且这个延迟包含了 KeyNet 自己的前向；按扫描的 key 数算，达到 99% 召回少扫约 11 倍（库的 0.009% 对 0.10%）。论文附录还把同样的做法接到 ScaNN、SOAR、LeanVec 上，结论在中等预算区间都成立；在预算很低、前向开销还没被索引加速抵掉的区间，直接用原始查询仍然有竞争力；SOAR 在 Quora 上基本饱和，两条曲线重合。
+
+SupportNet 路由这边，官方博客说在 NQ 分 128 个簇时，小号 SupportNet 达到 95% 路由召回只要 1.74 ms，质心路由要 3.36 ms，约快 1.9 倍；论文正文用的也是 NQ 分 128 个簇，不过模型是 8 层、训了 10 亿样本的 XS，横轴换成了 FLOPs：只探 1 个簇时约 72% 选对、质心路由约 56%，探 4 个簇时约 95%，质心路由要探 16 个簇才到这个水平。这些都是论文和博客的数字，我没有跑。
+
+## 6. 摊销这笔账怎么算
+
+摊销的意思是先付一大笔，再在每次查询上省一点。所以要问三件事：先付的那笔有多大，什么情况下它会作废，以及省下来的够不够多。
+
+**离线要付什么。** 每个训练查询都要穷举一遍，求出它在每个簇里的最佳 key。论文的数据准备是：查询去重、编码，再加高斯噪声做增广（$\sigma = 0.02$，加完重新归一化到单位球面），把查询集扩大 5 到 100 倍，然后对每个增广查询做精确 MIPS 作为标签。训练一般看 1B 到 10B 个样本；附录 A.7 在 NQ 上扫了训练长度，下游指标大约在 3B 之后就不怎么动了。我对了一下仓库里的默认配置，`trn_batch_size: 4096` 乘 `num_trn_steps: 732_421` 正好约 30 亿，和这个结论对得上。论文没有给出训练要花多少 GPU 小时，这一块我没法替他们估。
+
+模型本身也不小。论文按库大小的比例定参数量：$P = \rho \cdot n \cdot d$，XS 到 L 分别是 1%、5%、10%、20%。按 NQ 的 $n \approx 2.6\text{M}$、$d = 384$ 粗算，$n \cdot d \approx 10$ 亿，XS 约一千万参数，L 约两亿参数。这个量级对 GPU 来说不算什么，但它意味着「索引旁边多了一个和库大小挂钩的模型」，库变大，模型也要跟着变大。论文结论里说，小模型（XS、S）的「算力–召回」折中最好，大模型在 GPU 并行、按延迟算的时候才追上来。
+
+**语料变了怎么办。** 这是我最关心、论文讲得最少的一点，它的前提是「fixed key database」。下面是我自己按支撑函数的性质推的，没有实验验证：
+
+- **新增 key。** 往簇 $Y_j$ 里加一个 key $y_{\text{new}}$，真正的支撑函数变成 $\max(\sigma_{Y_j}(x), \langle x, y_{\text{new}}\rangle)$，只会变大。旧的 SupportNet 会低估这个簇，可能因此漏掉它。好在这个修正是精确的、而且很便宜：把还没训进模型的新 key 单独放一个小缓冲区，查询时算 $\max(f_\theta(x)_j, \max_{y \in \text{buf}_j} \langle x, y\rangle)$ 作为簇 $j$ 的分数，代价是缓冲区的大小。缓冲区攒到一定规模再重训。
+- **删除 key。** 真正的支撑函数只会变小，旧模型会高估。高估的后果是多探了一个不值得探的簇，浪费一点算力，但簇内扫描是精确的，不会因此返回一个已删除的结果，也不会漏掉别的簇里的真答案（只要预算里还有余量）。所以对路由来说，删除比新增安全得多。
+- **KeyNet 更脆一点。** 它学的是「这个问题的最佳 key 在哪」。新加进来一篇更相关的文档，KeyNet 还会把查询搬到旧答案附近；新文档要是恰好落在同一个格子里还好，落在别处就会被错过。所以如果语料更新频繁，我会更倾向用 SupportNet 加缓冲区这条路，或者让 KeyNet 只负责一部分流量，另一部分走原始查询。
+
+**查询漂移怎么办。** 论文 4.5 节和附录 A.2 测了这一点：给测试查询加比训练时更大的高斯噪声（$\sigma$ 从 0 到 0.06，训练时是 0.02），再接 FAISS IVF。结论是性能会下降，但「not catastrophic」，$\sigma = 0.03$ 时在中等预算区间仍然比原始查询好。我对这个实验的看法是：高斯噪声是一种很温和的偏移，它模拟的是「问法略有不同」，不是「出现了一批全新话题的问题」。作者自己在附录里也承认，数据增广大概能缓解这类退化，但「would not render the model robust to other types of distribution shift」，并把在线适应查询漂移列为未来工作。
+
+好在这里的失败方式是温和的：模型错了，损失的是召回，不是正确性，因为最后的扫描始终是精确的。这让监控变得简单。换我来做的话：线上每天抽一小批真实查询，离线做一次穷举，算一下路由召回和最终召回，和上线时的基线比；掉下去了，先把探查的簇数调大顶住，再用新采的查询重训。
+
+**什么时候不值得。** 从论文自己的结果看，有三种情况收益有限：查询和 key 同分布（Quora 那样）；预算极低，小网络那一次前向的开销还没被省下的扫描抵消；底层索引已经很强（比如 SOAR 在 Quora 上）。我还会加一种：库很小，或者流量很低。训练要付几十亿样本的成本，每次查询只省零点几毫秒，摊不开就不划算。
+
+## 7. 和 HNSW、学习型路由放在一起看
+
+论文在背景一节把近似 MIPS 分成几类：把内积变换成欧氏距离的方法、量化（乘积量化、ScaNN 一类）、图索引（HNSW 一类）、learning-to-hash，以及学习型索引。它的判断是，这些方法在推理时基本都是「query-agnostic」的，有些会在建索引时部分用到查询统计。它点名的例子有两个：RoarGraph（VLDB 2024），从标题看是为「跨模态」近邻搜索建的投影二部图；以及一篇 KDD 2025 的工作，做的是「query-aware repartitioning」的树状学习型向量索引。这两篇我没有细读，只按论文的归类转述。
+
+和图索引的关系，我是这么看的。HNSW 没有「选簇」这一步，它从入口点出发，沿着邻居图贪心地往查询方向走，所以 SupportNet 这种路由器在 HNSW 里没有直接的位置。KeyNet 不一样，它只改写查询向量，原则上对任何索引都是即插即用的。论文实际测过的是 FAISS IVF、ScaNN、SOAR、LeanVec 和 15M key 的 BioASQ，**没有测 HNSW**。我的猜测是，图索引在查询和 key 分布错开时也会吃亏，这正是 RoarGraph 这类工作想解决的问题；把查询先搬到 key 的流形上，贪心游走的起点和方向可能都会好一些。但这只是推测，图搜索的召回还和图的连通性、入口点、ef 参数有关，要真接上得自己测。
+
+和其他学习型路由比，我注意到论文引用了一篇 SIGIR 2024 的工作，把基于聚类的近邻搜索里的选簇写成 learning-to-rank 问题。按我的理解，学习型路由本质上都在学「给定查询，哪些簇值得探查」，可以当分类做，也可以当排序做。SupportNet 的区别在于它回归的是一个有明确数学含义的量：每个簇的支撑函数值。这个量有凸性、齐次性和梯度结构可以利用，分数本身也有意义，官方博客也说 SupportNet 适合需要「calibrated score」的场景，比如拿来做阈值或者下游重排。分类或排序的路由器给出的只是「选哪个」，不太好回答「选了之后最好能拿到多高的分」。
+
+## 8. 我的看法
+
+1. **这篇论文最值得记住的是那一行等式。** 「最大内积是支撑函数，梯度是最佳 key」，说出来几乎是教科书内容，但它一下子把路由（要分数）和改写查询（要 key）统一成了同一个函数的值和梯度。网络结构（ICNN）、损失（梯度匹配、欧拉一致性）、齐次化包装，全都是顺着这个函数的性质推出来的，不是随便堆的技巧。我读论文时很少碰到这么「顺」的设计。
+
+2. **质心路由的问题被讲清楚了，这本身就有价值。** 质心分数是平均值、是下界，下界的松紧因簇而异，这一点做向量检索的人大多凭经验知道（所以才会把 nprobe 调大），但很少有人把它和「真正想要的是每个簇的支撑函数」对应起来。哪怕不用这篇论文的方法，这个视角也能帮人想清楚：分簇时让簇更「圆」、或者像 SOAR 那样让一个 key 进多个簇，本质上都是在缩小平均值和最大值之间的差距。
+
+3. **KeyNet 比 SupportNet 更容易落地。** 它不碰索引，只在前面加一个模型，失败了直接关掉就行，风险很小。我真要试，会先从 KeyNet 开始，选查询和文档分布差得最远的那个场景，然后保留用原始查询对候选重排这一步。
+
+4. **摊销的前提要当成运维问题来对待，而不是论文里的一句假设。** 语料更新、查询漂移、重训节奏和监控，论文只做了高斯噪声这一种漂移测试，语料更新完全没碰。按支撑函数的性质，新增 key 可以用一个小缓冲区精确兜底，删除 key 只会浪费一点探查，这让我对 SupportNet 路由在半静态语料上的可用性比较乐观；对 KeyNet 在频繁更新的库上，我会谨慎一些。
+
+5. **训练成本是我最想看到、但论文没给的数字。** 几十亿个样本，每个都要穷举打标签，再加上和库大小挂钩的模型参数。它省下的是每次查询的毫秒级延迟，划不划算完全取决于流量和更新频率。如果以后有人在真实的 RAG 服务上把这笔账算出来，我会很想看。
+
+## 参考
+
+- [Faster Retrieval for Better, More Efficient RAG（Apple Machine Learning Research，2026-11-05）](https://machinelearning.apple.com/research/faster-retrieval)
+- [Amortized Maximum Inner Product Search with Learned Support Functions（arXiv:2603.08001）](https://arxiv.org/abs/2603.08001)
+- [Amortizing Maximum Inner Product Search with Learned Support Functions（PMLR v306，ICML 2026）](https://proceedings.mlr.press/v306/olausson26a.html)
+- [Amortizing Maximum Inner Product Search with Learned Support Functions（Apple 论文页）](https://machinelearning.apple.com/research/amortizing-inner-product-search)
+- [apple/ml-amips（代码）](https://github.com/apple/ml-amips)
+- [OTT-JAX：ICNN 与 KeyNet 的实现](https://ott-jax.readthedocs.io/neural/_autosummary/ott.neural.networks.icnn.ICNN.html)
+- [Input Convex Neural Networks（Amos、Xu、Kolter，ICML 2017）](https://arxiv.org/abs/1609.07152)
+- [Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs（Malkov、Yashunin）](https://arxiv.org/abs/1603.09320)
+- [FAISS](https://github.com/facebookresearch/faiss)
+- [BEIR benchmark](https://github.com/beir-cellar/beir)
