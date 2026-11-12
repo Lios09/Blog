@@ -10,18 +10,25 @@ const options = {
   message: "the page you asked for has moved or never existed",
 };
 
+const firstFrame = notFound.default(options)(0);
+
 export function NotFoundArt() {
-  const ref = useRef<HTMLPreElement>(null);
+  const hostRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
-    const el = ref.current;
+    const el = hostRef.current;
     if (!el) return;
     return mount(el, notFound, options);
   }, []);
 
   return (
-    <pre ref={ref} role="img" aria-label={notFound.meta.name}>
-      {notFound.default(options)(0)}
+    <pre
+      role="img"
+      aria-label={notFound.meta.name}
+      className="has-[[data-ascii]:not(:empty)]:[&_.not-found-still]:hidden"
+    >
+      <span className="not-found-still">{firstFrame}</span>
+      <span ref={hostRef} data-ascii="" />
     </pre>
   );
 }
