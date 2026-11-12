@@ -1,6 +1,6 @@
 import { Ascii } from "ascii.rest/react";
 
-const NotFundPage = () => {
+const NotFoundPage = () => {
   return (
     <div className="flex h-screen flex-col items-center justify-center">
       <Ascii
@@ -15,4 +15,4 @@ const NotFundPage = () => {
   );
 };
 
-export default NotFundPage;
+export default NotFoundPage;

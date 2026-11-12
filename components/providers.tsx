@@ -1,7 +1,6 @@
 "use client";
 
 import { useServerInsertedHTML } from "next/navigation";
-import Script from "next/script";
 import { ThemeProvider } from "next-themes";
 import { useRef } from "react";
 
@@ -14,9 +13,8 @@ function ThemeScript() {
     }
     inserted.current = true;
     return (
-      <Script
+      <script
         id="theme-init"
-        strategy="beforeInteractive"
         // biome-ignore lint/security/noDangerouslySetInnerHtml: Constant theme script, not user content.
         dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }}
       />
