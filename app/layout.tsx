@@ -13,11 +13,11 @@ export const metadata: Metadata = {
   metadataBase: new URL(SITE_INFO.url),
   title: {
     default: "Code, Curiosity & Everything Between",
-    template: "%s | Digital Garden",
+    template: "%s | zx's Blog",
   },
   description:
     "Part lab notebook, part idea garden. Exploring code, AI, strange ideas, and the little things in life. Still compiling...",
-  applicationName: "zx's Garden",
+  applicationName: "zx's Blog",
   openGraph: {
     images: [
       {

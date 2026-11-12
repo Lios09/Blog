@@ -1,18 +1,12 @@
-import { Ascii } from "ascii.rest/react";
+import { NotFoundArt } from "@/components/not-found-art";
 
-const NotFoundPage = () => {
+export const metadata = { title: "404" };
+
+export default function NotFoundPage() {
   return (
     <div className="flex h-screen flex-col items-center justify-center">
-      <Ascii
-        piece="not-found"
-        options={{
-          code: "404",
-          title: "page not found",
-          message: "the page you asked for has moved or never existed",
-        }}
-      />
+      <h1 className="sr-only">404 - page not found</h1>
+      <NotFoundArt />
     </div>
   );
-};
-
-export default NotFoundPage;
+}
