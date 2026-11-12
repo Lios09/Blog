@@ -39,15 +39,13 @@ export default async function Image({
     notFound();
   }
 
-  const kicker = (post.metadata.category ?? "Note").toUpperCase();
-
   return new ImageResponse(
     <BlogOgCard
-      kicker={kicker}
       title={post.metadata.title}
       description={post.metadata.description}
-      meta={`${formatDate(post.metadata.date)}  ·  ${post.readingTime.text}`}
-      tags={post.metadata.tags}
+      category={post.metadata.category}
+      date={formatDate(post.metadata.date)}
+      detail={post.readingTime.text}
     />,
     {
       ...size,

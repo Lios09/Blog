@@ -13,10 +13,9 @@ export default function Image() {
 
   return new ImageResponse(
     <BlogOgCard
-      kicker="BLOG"
       title="Posts"
       description={SITE_INFO.description}
-      meta={count === 1 ? "1 note" : `${count} notes`}
+      detail={count === 1 ? "1 note" : `${count} notes`}
     />,
     {
       ...size,

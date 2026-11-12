@@ -1,166 +1,178 @@
-const INK = "#f4f4f5";
-const MUTED = "#a1a1aa";
-const ACCENT = "#3B82F6";
-const WASH = "#87CEFA";
+const PAPER = "#F3F4F6";
+const INK = "#18181B";
+const QUIET = "#71717A";
+const RULE = "#D4D4D8";
+const MARK = "#FF9800";
+
+const MARGIN = 132;
+const GUTTER = 36;
+const TEXT_WIDTH = 968;
+const LINE_HEIGHT = 1.32;
 
 function clip(text: string, max: number) {
   const chars = [...text];
   if (chars.length <= max) return text;
-  return `${chars.slice(0, max - 1).join("")}…`;
+  const sliced = chars.slice(0, max - 1).join("");
+  const breakAt = Math.max(
+    sliced.lastIndexOf("，"),
+    sliced.lastIndexOf("。"),
+    sliced.lastIndexOf("、"),
+    sliced.lastIndexOf(" "),
+  );
+  if (breakAt >= Math.floor(max * 0.55)) {
+    return `${sliced.slice(0, breakAt)}…`;
+  }
+  return `${sliced}…`;
 }
 
 function titleSize(title: string) {
   const length = [...title].length;
-  if (length <= 16) return 72;
-  if (length <= 32) return 56;
-  return 44;
+  if (length <= 12) return 68;
+  if (length <= 24) return 56;
+  if (length <= 40) return 48;
+  return 42;
 }
 
 export function BlogOgCard({
-  kicker,
   title,
   description,
-  meta,
-  tags = [],
+  category,
+  date,
+  detail,
 }: {
-  kicker: string;
   title: string;
   description?: string;
-  meta?: string;
-  tags?: string[];
+  category?: string;
+  date?: string;
+  detail?: string;
 }) {
-  const shownTags = tags.slice(0, 3);
-  const summary = description ? clip(description, 88) : "";
+  const size = titleSize(title);
+  const summary = description ? clip(description, 72) : "";
+  const markOffset = Math.round((size * LINE_HEIGHT - 14) / 2);
+  const meta = {
+    display: "flex" as const,
+    fontFamily: "Geist Mono",
+    fontSize: 22,
+    color: QUIET,
+  };
 
   return (
     <div
       style={{
-        width: "100%",
-        height: "100%",
+        width: 1200,
+        height: 630,
         display: "flex",
-        backgroundColor: "#050505",
+        position: "relative",
+        backgroundColor: PAPER,
         color: INK,
       }}
     >
       <div
         style={{
-          width: 10,
-          height: "100%",
-          backgroundColor: ACCENT,
+          position: "absolute",
+          left: MARGIN,
+          top: 48,
+          width: 2,
+          height: 534,
+          backgroundColor: RULE,
         }}
       />
       <div
         style={{
-          width: 1190,
-          height: "100%",
+          width: 1200,
+          height: 630,
           display: "flex",
           flexDirection: "column",
-          justifyContent: "space-between",
-          padding: "56px 64px",
+          padding: "52px 64px 48px 0",
         }}
       >
         <div
           style={{
             display: "flex",
+            width: TEXT_WIDTH,
+            marginLeft: MARGIN + GUTTER,
             justifyContent: "space-between",
-            alignItems: "center",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              fontFamily: "Geist Mono",
-              fontSize: 22,
-              letterSpacing: 1.5,
-              color: MUTED,
-            }}
-          >
-            zx&apos;s Garden
-          </div>
-          <div
-            style={{
-              display: "flex",
-              fontFamily: "Geist Mono",
-              fontSize: 22,
-              letterSpacing: 2,
-              color: WASH,
-            }}
-          >
-            {kicker}
-          </div>
+          <div style={meta}>zx&apos;s Garden</div>
+          {category ? <div style={meta}>{category}</div> : <div style={meta} />}
         </div>
 
         <div
           style={{
             display: "flex",
-            flexDirection: "column",
+            flexGrow: 1,
+            alignItems: "center",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              width: 1040,
-              fontFamily: "Geist",
-              fontSize: titleSize(title),
-              fontWeight: 600,
-              lineHeight: 1.18,
-              letterSpacing: -0.8,
-            }}
-          >
-            {title}
-          </div>
-          {summary ? (
+          <div style={{ display: "flex", alignItems: "flex-start" }}>
+            <div
+              style={{
+                width: MARGIN,
+                display: "flex",
+                justifyContent: "flex-end",
+                paddingRight: 22,
+                paddingTop: markOffset,
+              }}
+            >
+              <div
+                style={{
+                  width: 64,
+                  height: 14,
+                  backgroundColor: MARK,
+                }}
+              />
+            </div>
             <div
               style={{
                 display: "flex",
-                width: 1040,
-                marginTop: 28,
-                fontFamily: "Geist Mono",
-                fontSize: 26,
-                lineHeight: 1.45,
-                color: MUTED,
+                flexDirection: "column",
+                width: TEXT_WIDTH,
+                marginLeft: GUTTER,
               }}
             >
-              {summary}
+              <div
+                style={{
+                  display: "flex",
+                  width: TEXT_WIDTH,
+                  fontFamily: "Geist",
+                  fontSize: size,
+                  fontWeight: 600,
+                  lineHeight: LINE_HEIGHT,
+                  letterSpacing: -0.4,
+                }}
+              >
+                {title}
+              </div>
+              {summary ? (
+                <div
+                  style={{
+                    display: "flex",
+                    width: TEXT_WIDTH,
+                    marginTop: 28,
+                    fontFamily: "Geist Mono",
+                    fontSize: 24,
+                    lineHeight: 1.5,
+                    color: QUIET,
+                  }}
+                >
+                  {summary}
+                </div>
+              ) : null}
             </div>
-          ) : null}
+          </div>
         </div>
 
         <div
           style={{
             display: "flex",
+            width: TEXT_WIDTH,
+            marginLeft: MARGIN + GUTTER,
             justifyContent: "space-between",
-            alignItems: "center",
-            borderTop: "1px solid rgba(255,255,255,0.14)",
-            paddingTop: 22,
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              fontFamily: "Geist Mono",
-              fontSize: 22,
-              color: MUTED,
-            }}
-          >
-            {meta ?? ""}
-          </div>
-          <div style={{ display: "flex" }}>
-            {shownTags.map((tag, index) => (
-              <div
-                key={tag}
-                style={{
-                  display: "flex",
-                  marginLeft: index === 0 ? 0 : 18,
-                  fontFamily: "Geist Mono",
-                  fontSize: 22,
-                  color: WASH,
-                }}
-              >
-                #{tag}
-              </div>
-            ))}
-          </div>
+          <div style={meta}>{date ?? detail ?? ""}</div>
+          <div style={meta}>{date ? (detail ?? "") : ""}</div>
         </div>
       </div>
     </div>

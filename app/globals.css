@@ -62,6 +62,16 @@
   --color-bg-line: oklch(70% 0.15 250);
   --color-void: #050505;
   --animate-fade-in-up: fade-in-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-mark-in: mark-in 0.75s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes mark-in {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
 }
 
 [data-code] {
