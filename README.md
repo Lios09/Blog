@@ -16,8 +16,6 @@
   </picture>
 </div>
 
-Thoughts, notes, and things worth keeping.
-
 A personal blog built with the Next.js App Router, with posts stored as local MDX files. The homepage welcomes readers with a handwritten greeting and an animated background, while article pages offer table-of-contents navigation, syntax highlighting, and related posts.
 
 

@@ -92,7 +92,7 @@
     "typescript": "^5"
   },
   "lint-staged": {
-    "*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc,css,scss,md}": "biome check --write",
+    "*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc,css,scss}": "biome check --write --no-errors-on-unmatched",
     "*.mdx": "prettier --write"
   },
   "packageManager": "pnpm@12.15.0"
