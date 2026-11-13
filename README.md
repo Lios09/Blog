@@ -1,8 +1,27 @@
-# zx's Blog
+<div align="center">
+  <picture>
+    <source
+      media="(prefers-color-scheme: dark)"
+      srcset="public/blog-log-dark.svg"
+    />
+    <source
+      media="(prefers-color-scheme: light)"
+      srcset="public/blog-log.svg"
+    />
+    <img
+      src="public/blog-log.svg"
+      alt="TanStack Query"
+      width="900"
+    />
+  </picture>
+</div>
 
 Thoughts, notes, and things worth keeping.
 
 A personal blog built with the Next.js App Router, with posts stored as local MDX files. The homepage welcomes readers with a handwritten greeting and an animated background, while article pages offer table-of-contents navigation, syntax highlighting, and related posts.
+
+
+### <a href="https://mizenix.com">Live Blog →</b></a>
 
 ## Features
 
